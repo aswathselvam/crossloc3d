@@ -43,14 +43,9 @@ class OursMETask(BaseMETask):
         }
 
     def _eval_step(self, meta_data, batch_data, **kwargs):
-        if len(self.devices) > 1 and self.master_device is not None:
-            model_replicas = parallel.replicate(
-                self.model, [self.master_device])
-            embeddings = parallel.parallel_apply(
-                model_replicas, [((pcd, raw_pcd),) for pcd, raw_pcd in zip(batch_data['pcd'], batch_data['raw_pcd'])], devices=[self.master_device])
-            embeddings = parallel.gather(embeddings, self.master_device, dim=0)
-        else:
-            embeddings = self.model((batch_data['pcd'][0], batch_data['raw_pcd'][0]))
+        # Bypass PyTorch DataParallel replicate/apply as MinkowskiEngine 0.5.4 does not replicate cleanly
+        # and we only evaluate on the single master device anyway.
+        embeddings = self.model((batch_data['pcd'][0], batch_data['raw_pcd'][0]))
         return embeddings
 
     def step(self, meta_data, batch_data, **kwargs):

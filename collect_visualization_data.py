@@ -11,7 +11,7 @@ from utils import Config, Logger
 from datasets import create_dataloaders
 from tasks import create_task
 
-def forward_step(model, data, step_idx):
+def forward_step(model, data, step_idx, **kwargs):
     xs, pcd = data
     new_xs = []
     if model.backbone.fine_to_coarse:
@@ -19,12 +19,14 @@ def forward_step(model, data, step_idx):
     else:
         order = list(range(len(xs))[::-1])
 
+    coords_list = []
     for i in order:
         x = model.backbone.up_conv0_lst[i](xs[i])
         for _, (conv, block) in enumerate(zip(model.backbone.up_convs_lst[i], model.backbone.up_blocks_lst[i])):
             x = conv(x)
             x = block(x)
         features = x.decomposed_features
+        coords_list.append(x.decomposed_coordinates[0].cpu().numpy())
         x = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
         x = x.permute(0, 2, 1)
         new_xs.append(x)
@@ -54,6 +56,32 @@ def forward_step(model, data, step_idx):
     fused_input = torch.zeros(bs, 256, n_pts, device=target_xs.device, dtype=target_xs.dtype)
     fused_input[:, step_idx*64 : (step_idx+1)*64] = target_xs
     
+    if kwargs.get('return_gradcam', False):
+        query_emb = kwargs.get('query_emb', None)
+        with torch.enable_grad():
+            fused_input = fused_input.detach().requires_grad_(True)
+            x_fused = model.backbone.conv_fuse(fused_input)
+            x_fused.retain_grad()
+            embeddings = model.pool.net_vlad(x_fused.permute(0, 2, 1))
+            
+            # Use L2 norm if needed by the config, but we'll assume it is normalized
+            # since we do normalization outside. We will normalize here just in case.
+            embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+            score = torch.sum(embeddings_norm * query_emb)
+            
+            model.zero_grad()
+            score.backward()
+            
+            f = x_fused[0].detach()
+            g = x_fused.grad[0].detach()
+            weights = torch.mean(g, dim=1, keepdim=True)
+            cam = torch.sum(weights * f, dim=0)
+            cam = F.relu(cam)
+            if torch.max(cam) > 0:
+                cam = cam - torch.min(cam)
+                cam = cam / torch.max(cam)
+            return embeddings.detach(), cam.cpu().numpy(), coords_list
+
     x_fused = model.backbone.conv_fuse(fused_input)
     embeddings = model.pool.net_vlad(x_fused.permute(0, 2, 1))
     return embeddings
@@ -224,6 +252,52 @@ def main():
             dist_to_query = float(np.sqrt((db_item['northing'] - q_meta['northing'])**2 + 
                                          (db_item['easting'] - q_meta['easting'])**2))
             
+            # Re-evaluate the top-1 retrieved item with Grad-CAM
+            db_item_data = db_loader.dataset[top1_idx]
+            db_meta_batch, db_data_batch = db_loader.collate_fn([db_item_data])
+            task.step(db_meta_batch, db_data_batch)
+            db_pcd_batch = db_data_batch['pcd'][0]
+            db_raw_pcd_batch = db_data_batch['raw_pcd'][0]
+            db_emb_cam, cam, coords_list = forward_step(task.model, (db_pcd_batch, db_raw_pcd_batch), step, return_gradcam=True, query_emb=torch.tensor(q_emb, device=next(task.model.parameters()).device).unsqueeze(0))
+
+            # Spatial interpolation of voxel-level Grad-CAM weights to continuous 1024 points of db_pc_ds
+            from scipy.spatial import cKDTree
+            
+            # Continuous coordinates for the 3 scales
+            # Order is [2, 1, 0], corresponding to quantization size [0.4, 0.12, 0.05]
+            coords_2_cont = coords_list[0] * 0.4
+            coords_1_cont = coords_list[1] * 0.12
+            coords_0_cont = coords_list[2] * 0.05
+            
+            N2 = len(coords_2_cont)
+            N1 = len(coords_1_cont)
+            N0 = len(coords_0_cont)
+            
+            cam_2 = cam[0 : N2]
+            cam_1 = cam[N2 : N2+N1]
+            cam_0 = cam[N2+N1 : N2+N1+N0]
+            
+            # Map points to nearest voxel at each scale
+            tree_2 = cKDTree(coords_2_cont)
+            _, idxs_2 = tree_2.query(db_pc_ds, k=1)
+            weights_2 = cam_2[idxs_2]
+            
+            tree_1 = cKDTree(coords_1_cont)
+            _, idxs_1 = tree_1.query(db_pc_ds, k=1)
+            weights_1 = cam_1[idxs_1]
+            
+            tree_0 = cKDTree(coords_0_cont)
+            _, idxs_0 = tree_0.query(db_pc_ds, k=1)
+            weights_0 = cam_0[idxs_0]
+            
+            # Fuse/average weights across scales
+            point_weights = (weights_2 + weights_1 + weights_0) / 3.0
+            
+            # Normalize point weights to [0, 1] range
+            if np.max(point_weights) > 0:
+                point_weights = point_weights - np.min(point_weights)
+                point_weights = point_weights / np.max(point_weights)
+            
             query_entry['steps'][str(step)] = {
                 'retrieved_idx': top1_idx,
                 'retrieved_file': db_item['query'],
@@ -234,7 +308,8 @@ def main():
                 'dist_to_query_meters': dist_to_query,
                 'is_correct': bool(is_correct),
                 'pc_local': db_pc_ds.tolist(),
-                'pc_global': db_pc_global
+                'pc_global': db_pc_global,
+                'attention_heatmap': point_weights.tolist()
             }
             
         visualization_data.append(query_entry)

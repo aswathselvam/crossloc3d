@@ -297,6 +297,25 @@ function initGlobal3dViewer() {
     scene.add(globalMapObj);
     console.log("RGB Global Map points loaded in Three.js Scene.");
     
+    let isHeatmapView = false;
+    const btnToggleHeatmap = document.getElementById('btn-toggle-heatmap');
+    btnToggleHeatmap.addEventListener('click', () => {
+        isHeatmapView = !isHeatmapView;
+        if (isHeatmapView) {
+            globalMapObj.visible = false;
+            btnToggleHeatmap.textContent = "Show Global Map (Hide Heatmap)";
+            btnToggleHeatmap.classList.replace('btn-secondary', 'btn-primary');
+        } else {
+            globalMapObj.visible = true;
+            btnToggleHeatmap.textContent = "Toggle Attention Heatmap";
+            btnToggleHeatmap.classList.replace('btn-primary', 'btn-secondary');
+        }
+        // Force an update to the overlays so it re-renders the retrieved patch with heatmap colors
+        if (currentQuery) {
+            renderActiveStepState();
+        }
+    });
+    
     // Resize handler
     window.addEventListener('resize', () => {
         const w = container.clientWidth;
@@ -332,7 +351,7 @@ function initGlobal3dViewer() {
     }
 
     global3dViewer = {
-        updateOverlays(qX, qY, qPcLocal, rX, rY, rPcLocal, isCorrect) {
+        updateOverlays(qX, qY, qPcLocal, rX, rY, rPcLocal, isCorrect, attentionHeatmap) {
             // Remove previous overlays
             if (globalQueryPointsObj) {
                 scene.remove(globalQueryPointsObj);
@@ -385,17 +404,34 @@ function initGlobal3dViewer() {
             // 2. Plot Retrieved points globally
             const rGeom = new THREE.BufferGeometry();
             const rPos = [];
-            rPcLocal.forEach(pt => {
+            const rColors = [];
+            rPcLocal.forEach((pt, i) => {
                 const x = rX + pt[0] * 100.0;
                 const y = rY + pt[1] * 100.0;
                 const z = rZ + pt[2] * 100.0 + 1.5; // lift slightly above ground
                 rPos.push(x, y, z);
+                
+                // Assign color based on heatmap if enabled
+                if (isHeatmapView && attentionHeatmap && attentionHeatmap.length > i) {
+                    // Generate a color map (jet or turbo) using the attention weight
+                    const weight = attentionHeatmap[i];
+                    // Turbo-like colormap approximation (Blue -> Green -> Yellow -> Red)
+                    const r = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.5))));
+                    const g = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.25))));
+                    const b = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * weight)));
+                    rColors.push(r, g, b);
+                } else {
+                    const rColorHex = isCorrect ? 0x10b981 : 0xef4444;
+                    const c = new THREE.Color(rColorHex);
+                    rColors.push(c.r, c.g, c.b);
+                }
             });
             rGeom.setAttribute('position', new THREE.Float32BufferAttribute(rPos, 3));
-            const rColor = isCorrect ? 0x10b981 : 0xef4444; // green / red
+            rGeom.setAttribute('color', new THREE.Float32BufferAttribute(rColors, 3));
+            
             const rMat = new THREE.PointsMaterial({
-                size: 2.2, // slightly smaller points
-                color: new THREE.Color(rColor),
+                size: 3.5, // slightly larger points for heatmap
+                vertexColors: true,
                 transparent: true,
                 opacity: 0.85
             });
@@ -568,7 +604,8 @@ function renderActiveStepState() {
         global3dViewer.updateOverlays(
             qX, qY, currentQuery.pc_local,
             rX, rY, stepData.pc_local,
-            stepData.is_correct
+            stepData.is_correct,
+            stepData.attention_heatmap
         );
     }
 }

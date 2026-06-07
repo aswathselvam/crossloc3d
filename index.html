@@ -147,7 +147,10 @@
             <section class="global-3d-section card">
                 <div class="card-header">
                     <h2>RGB Global Pointcloud Map (Centered 3D)</h2>
-                    <span class="help-tooltip" title="3D point cloud of the campus (103k points from trim_umcp_map.las). Orbit with mouse. Query is bright blue, retrieved patch is green/red.">3D Map</span>
+                    <div class="header-controls">
+                        <button id="btn-toggle-heatmap" class="btn btn-secondary">Toggle Attention Heatmap</button>
+                        <span class="help-tooltip" title="3D point cloud of the campus (103k points from trim_umcp_map.las). Orbit with mouse. Query is bright blue, retrieved patch is green/red.">3D Map</span>
+                    </div>
                 </div>
                 <div id="global-3d-map" class="map-container"></div>
             </section>

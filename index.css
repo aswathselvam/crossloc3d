@@ -178,6 +178,25 @@ body {
     color: var(--text-primary);
 }
 
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, rgba(var(--accent-green), 0.1) 0%, rgba(var(--accent-green), 0.02) 100%);
+    border-color: rgba(16, 185, 129, 0.3);
+    color: var(--accent-green);
+}
+
+.btn-primary:hover {
+    background: var(--accent-green);
+    color: #0b0c10;
+    border-color: var(--accent-green);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.3);
+}
+
 .canvas-container {
     height: 180px;
     background: #060709;
