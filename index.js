@@ -134,7 +134,7 @@ function createLocalViewer(elementId, type) {
     const height = container.clientHeight;
     
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x060709);
+    scene.background = new THREE.Color(0xf1f5f9);
     
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     camera.up.set(0, 0, 1); // Set Z as up vector to match point cloud coordinates
@@ -256,7 +256,7 @@ function initGlobal3dViewer() {
     const height = container.clientHeight;
     
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0b0c10);
+    scene.background = new THREE.Color(0xf1f5f9);
     
     const camera = new THREE.PerspectiveCamera(45, width / height, 1, 10000);
     camera.up.set(0, 0, 1); // Set Z as up vector
@@ -449,7 +449,8 @@ function initGlobal3dViewer() {
             // 4. Add Retrieved Bounding Box (200m x 200m x 200m)
             const rBoxGeom = new THREE.BoxGeometry(200, 200, 200);
             const rEdges = new THREE.EdgesGeometry(rBoxGeom);
-            const rBoxMat = new THREE.LineBasicMaterial({ color: rColor, linewidth: 2 });
+            const rColorHex = isCorrect ? 0x10b981 : 0xef4444;
+            const rBoxMat = new THREE.LineBasicMaterial({ color: rColorHex, linewidth: 2 });
             globalRetrievedBoxObj = new THREE.LineSegments(rEdges, rBoxMat);
             globalRetrievedBoxObj.position.set(rX, rY, rZ + 100);
             scene.add(globalRetrievedBoxObj);
