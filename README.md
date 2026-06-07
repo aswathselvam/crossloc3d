@@ -40,27 +40,27 @@ If you find this project useful in your research, please cite our work:
 # Getting Started
 ## Setting up Environment
 
+We provide a single-command setup script to handle package installation and the compilation of `MinkowskiEngine`.
+
+```bash
+# Optional system dependencies for OpenEXR
+sudo apt-get update && sudo apt-get install -y openexr libopenexr-dev
+
+# Run the automated installer (creates 'crossloc' env and builds MinkowskiEngine)
+./setup.sh
 ```
-conda create -n crossloc python=3.7 pandas tensorboard numpy -c conda-forge
+
+Alternatively, you can manually build the environment using:
+```bash
+conda env create -f environment.yml
 conda activate crossloc
-conda install pytorch=1.9.1 torchvision cudatoolkit=11.1 -c pytorch -c nvidia
-
-
-conda install openblas-devel -c anaconda
-sudo apt-get install openexr libopenexr-dev
-conda install -c conda-forge openexr
-
-
-pip install laspy pytest addict pytorch-metric-learning==0.9.97 yapf==0.40.1 bitarray==1.6.0 h5py transforms3d open3d
-pip install tqdm setuptools==59.5.0 einops
-pip install bagpy utm pptk
-conda install -c conda-forge openexr-python
-pip install pyexr pyntcloud
-
-
 cd MinkowskiEngine
 python setup.py install --blas_include_dirs=${CONDA_PREFIX}/include --blas=openblas
 ```
+
+> [!NOTE]
+> If your system Python interpreter hangs on startup in this environment due to local package directories, prepend `PYTHONNOUSERSITE=1` to your execution command.
+
 
 ## Dataset
 
