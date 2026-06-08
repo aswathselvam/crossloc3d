@@ -4,6 +4,9 @@ let globalMapData = [];
 let currentQuery = null;
 let currentStep = 3; // default to step 3 (final)
 let isAnimating = false;
+let isQueryHeatmap = true;
+let isRetrievedHeatmap = false;
+let isGlobalMapVisible = true;
 
 // Viewers state
 const localViewers = {
@@ -176,6 +179,7 @@ async function loadGlobalMap() {
             globalMapObj.geometry.attributes.position.needsUpdate = true;
             globalMapObj.geometry.attributes.color.needsUpdate = true;
             globalMapObj.geometry.computeBoundingSphere();
+            globalMapObj.visible = isGlobalMapVisible;
         }
         
         // Force rendering overlays if query was selected prior to loading completion
@@ -395,20 +399,49 @@ function initGlobal3dViewer() {
     scene.add(globalMapObj);
     console.log("RGB Global Map points loaded in Three.js Scene.");
     
-    let isHeatmapView = false;
-    const btnToggleHeatmap = document.getElementById('btn-toggle-heatmap');
-    btnToggleHeatmap.addEventListener('click', () => {
-        isHeatmapView = !isHeatmapView;
-        if (isHeatmapView) {
-            globalMapObj.visible = false;
-            btnToggleHeatmap.textContent = "Show Global Map (Hide Heatmap)";
-            btnToggleHeatmap.classList.replace('btn-secondary', 'btn-primary');
+    const btnQueryHeatmap = document.getElementById('btn-toggle-query-heatmap');
+    btnQueryHeatmap.addEventListener('click', () => {
+        isQueryHeatmap = !isQueryHeatmap;
+        if (isQueryHeatmap) {
+            btnQueryHeatmap.textContent = "Query Heatmap: ON";
+            btnQueryHeatmap.classList.replace('btn-secondary', 'btn-primary');
         } else {
-            globalMapObj.visible = true;
-            btnToggleHeatmap.textContent = "Toggle Attention Heatmap";
-            btnToggleHeatmap.classList.replace('btn-primary', 'btn-secondary');
+            btnQueryHeatmap.textContent = "Query Heatmap: OFF";
+            btnQueryHeatmap.classList.replace('btn-primary', 'btn-secondary');
         }
-        // Force an update to the overlays so it re-renders the retrieved patch with heatmap colors
+        if (currentQuery) {
+            renderActiveStepState();
+        }
+    });
+
+    const btnRetrievedHeatmap = document.getElementById('btn-toggle-retrieved-heatmap');
+    btnRetrievedHeatmap.addEventListener('click', () => {
+        isRetrievedHeatmap = !isRetrievedHeatmap;
+        if (isRetrievedHeatmap) {
+            btnRetrievedHeatmap.textContent = "Retrieved Heatmap: ON";
+            btnRetrievedHeatmap.classList.replace('btn-secondary', 'btn-primary');
+        } else {
+            btnRetrievedHeatmap.textContent = "Retrieved Heatmap: OFF";
+            btnRetrievedHeatmap.classList.replace('btn-primary', 'btn-secondary');
+        }
+        if (currentQuery) {
+            renderActiveStepState();
+        }
+    });
+
+    const btnGlobalVisibility = document.getElementById('btn-toggle-global-visibility');
+    btnGlobalVisibility.addEventListener('click', () => {
+        isGlobalMapVisible = !isGlobalMapVisible;
+        if (globalMapObj) {
+            globalMapObj.visible = isGlobalMapVisible;
+        }
+        if (isGlobalMapVisible) {
+            btnGlobalVisibility.textContent = "Global Map: Visible";
+            btnGlobalVisibility.classList.replace('btn-secondary', 'btn-primary');
+        } else {
+            btnGlobalVisibility.textContent = "Global Map: Hidden";
+            btnGlobalVisibility.classList.replace('btn-primary', 'btn-secondary');
+        }
         if (currentQuery) {
             renderActiveStepState();
         }
@@ -454,7 +487,7 @@ function initGlobal3dViewer() {
     }
 
     global3dViewer = {
-        updateOverlays(qX, qY, qPcLocal, rX, rY, rPcLocal, isCorrect, attentionHeatmap, resetCamera = false) {
+        updateOverlays(qX, qY, qPcLocal, rX, rY, rPcLocal, isCorrect, attentionHeatmap, queryAttentionHeatmap, resetCamera = false) {
             // Remove previous overlays
             if (globalQueryPointsObj) {
                 scene.remove(globalQueryPointsObj);
@@ -482,7 +515,7 @@ function initGlobal3dViewer() {
             }
             
             // Global map is loaded once and static, no update needed here
-
+ 
             // Get local terrain heights to align query and retrieved patches in height with the global map
             const qZ = getGroundHeight(qX, qY);
             const rZ = getGroundHeight(rX, rY);
@@ -500,18 +533,30 @@ function initGlobal3dViewer() {
                 if (z > qZMax) qZMax = z;
             });
             
-            qPcLocal.forEach(pt => {
+            qPcLocal.forEach((pt, i) => {
                 const x = qX + pt[0] * 100.0;
                 const y = qY + pt[1] * 100.0;
                 const z = qZ + pt[2] * 100.0 + 1.5; // lift slightly above ground to prevent z-fighting
                 qPos.push(x, y, z);
                 
-                const normZ = (qZMax - qZMin) > 0 ? (pt[2] - qZMin) / (qZMax - qZMin) : 0.5;
-                // Blue height-gradient: Dark blue (bottom) to light blue/cyan (top)
-                const r = 0.1 + normZ * 0.6;
-                const g = 0.3 + normZ * 0.6;
-                const b = 1.0;
-                qColors.push(r, g, b);
+                if (isQueryHeatmap && queryAttentionHeatmap && queryAttentionHeatmap.length > i) {
+                    const weight = queryAttentionHeatmap[i];
+                    // Turbo-like colormap approximation (Blue -> Green -> Yellow -> Red)
+                    const r = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.5))));
+                    const g = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.25))));
+                    const b = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * weight)));
+                    qColors.push(r, g, b);
+                } else if (isQueryHeatmap) {
+                    const normZ = (qZMax - qZMin) > 0 ? (pt[2] - qZMin) / (qZMax - qZMin) : 0.5;
+                    // Blue height-gradient: Dark blue (bottom) to light blue/cyan (top)
+                    const r = 0.1 + normZ * 0.6;
+                    const g = 0.3 + normZ * 0.6;
+                    const b = 1.0;
+                    qColors.push(r, g, b);
+                } else {
+                    // Solid bright blue
+                    qColors.push(0.0, 0.45, 1.0);
+                }
             });
             qGeom.setAttribute('position', new THREE.Float32BufferAttribute(qPos, 3));
             qGeom.setAttribute('color', new THREE.Float32BufferAttribute(qColors, 3));
@@ -538,7 +583,7 @@ function initGlobal3dViewer() {
                 rPos.push(x, y, z);
                 
                 // Assign color based on heatmap if enabled
-                if (isHeatmapView && attentionHeatmap && attentionHeatmap.length > i) {
+                if (isRetrievedHeatmap && attentionHeatmap && attentionHeatmap.length > i) {
                     // Generate a color map (jet or turbo) using the attention weight
                     const weight = attentionHeatmap[i];
                     // Turbo-like colormap approximation (Blue -> Green -> Yellow -> Red)
@@ -750,8 +795,57 @@ function renderActiveStepState(resetCamera = false) {
             rX, rY, stepData.pc_local,
             stepData.is_correct,
             stepData.attention_heatmap,
+            stepData.query_attention_heatmap,
             resetCamera
         );
+    }
+
+    // 3. Update Legend overlay dynamically
+    const legendQueryColor = document.getElementById('legend-query-color');
+    const legendQueryLabel = document.getElementById('legend-query-label');
+    const legendRetrievedColor = document.getElementById('legend-retrieved-color');
+    const legendRetrievedLabel = document.getElementById('legend-retrieved-label');
+    const legendGlobalColor = document.getElementById('legend-global-color');
+    const legendGlobalLabel = document.getElementById('legend-global-label');
+    const legendRetrievedBox = document.getElementById('legend-retrieved-box');
+    const legendRetrievedBoxLabel = document.getElementById('legend-retrieved-box-label');
+
+    if (legendQueryColor && legendQueryLabel) {
+        if (isQueryHeatmap && stepData.query_attention_heatmap) {
+            legendQueryColor.style.background = 'linear-gradient(to right, #0000ff, #00ff00, #ffff00, #ff0000)';
+            legendQueryLabel.textContent = 'Query: Attention Heatmap';
+        } else if (isQueryHeatmap) {
+            legendQueryColor.style.background = 'linear-gradient(to right, #050530, #00bcff)';
+            legendQueryLabel.textContent = 'Query: Height Gradient';
+        } else {
+            legendQueryColor.style.background = '#0073ff';
+            legendQueryLabel.textContent = 'Query: Solid Blue';
+        }
+    }
+
+    if (legendRetrievedColor && legendRetrievedLabel && legendRetrievedBox) {
+        if (isRetrievedHeatmap && stepData.attention_heatmap) {
+            legendRetrievedColor.style.background = 'linear-gradient(to right, #0000ff, #00ff00, #ffff00, #ff0000)';
+            legendRetrievedLabel.textContent = 'Retrieved: Attention Heatmap';
+            legendRetrievedBox.style.borderColor = stepData.is_correct ? '#10b981' : '#ef4444';
+            legendRetrievedBoxLabel.textContent = `Retrieved Box (${stepData.is_correct ? 'Correct' : 'Incorrect'})`;
+        } else {
+            const color = stepData.is_correct ? '#10b981' : '#ef4444';
+            legendRetrievedColor.style.background = color;
+            legendRetrievedLabel.textContent = `Retrieved: ${stepData.is_correct ? 'Correct Match' : 'Incorrect Match'}`;
+            legendRetrievedBox.style.borderColor = color;
+            legendRetrievedBoxLabel.textContent = `Retrieved Box (${stepData.is_correct ? 'Correct' : 'Incorrect'})`;
+        }
+    }
+
+    if (legendGlobalColor && legendGlobalLabel) {
+        if (isGlobalMapVisible) {
+            legendGlobalColor.style.background = 'linear-gradient(to right, #455a64, #cfd8dc)';
+            legendGlobalLabel.textContent = 'Global Map: RGB Campus';
+        } else {
+            legendGlobalColor.style.background = '#cbd5e1';
+            legendGlobalLabel.textContent = 'Global Map: Hidden';
+        }
     }
 }
 

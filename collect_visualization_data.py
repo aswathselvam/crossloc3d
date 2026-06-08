@@ -297,6 +297,50 @@ def main():
             if np.max(point_weights) > 0:
                 point_weights = point_weights - np.min(point_weights)
                 point_weights = point_weights / np.max(point_weights)
+
+            # Re-evaluate the query point cloud with Grad-CAM
+            q_item_data = q_loader.dataset[q_idx]
+            q_meta_batch, q_data_batch = q_loader.collate_fn([q_item_data])
+            task.step(q_meta_batch, q_data_batch)
+            q_pcd_batch = q_data_batch['pcd'][0]
+            q_raw_pcd_batch = q_data_batch['raw_pcd'][0]
+            db_emb_step = db_embs[step][top1_idx]
+            db_emb_tensor = torch.tensor(db_emb_step, device=next(task.model.parameters()).device).unsqueeze(0)
+            q_emb_cam, q_cam, q_coords_list = forward_step(task.model, (q_pcd_batch, q_raw_pcd_batch), step, return_gradcam=True, query_emb=db_emb_tensor)
+
+            # Continuous coordinates for the 3 scales for query
+            q_coords_2_cont = q_coords_list[0] * 0.4
+            q_coords_1_cont = q_coords_list[1] * 0.12
+            q_coords_0_cont = q_coords_list[2] * 0.05
+            
+            q_N2 = len(q_coords_2_cont)
+            q_N1 = len(q_coords_1_cont)
+            q_N0 = len(q_coords_0_cont)
+            
+            q_cam_2 = q_cam[0 : q_N2]
+            q_cam_1 = q_cam[q_N2 : q_N2+q_N1]
+            q_cam_0 = q_cam[q_N2+q_N1 : q_N2+q_N1+q_N0]
+            
+            # Map query points to nearest voxel at each scale
+            q_tree_2 = cKDTree(q_coords_2_cont)
+            _, q_idxs_2 = q_tree_2.query(q_pc_ds, k=1)
+            q_weights_2 = q_cam_2[q_idxs_2]
+            
+            q_tree_1 = cKDTree(q_coords_1_cont)
+            _, q_idxs_1 = q_tree_1.query(q_pc_ds, k=1)
+            q_weights_1 = q_cam_1[q_idxs_1]
+            
+            q_tree_0 = cKDTree(q_coords_0_cont)
+            _, q_idxs_0 = q_tree_0.query(q_pc_ds, k=1)
+            q_weights_0 = q_cam_0[q_idxs_0]
+            
+            # Fuse/average query weights across scales
+            q_point_weights = (q_weights_2 + q_weights_1 + q_weights_0) / 3.0
+            
+            # Normalize query point weights to [0, 1] range
+            if np.max(q_point_weights) > 0:
+                q_point_weights = q_point_weights - np.min(q_point_weights)
+                q_point_weights = q_point_weights / np.max(q_point_weights)
             
             query_entry['steps'][str(step)] = {
                 'retrieved_idx': top1_idx,
@@ -309,7 +353,8 @@ def main():
                 'is_correct': bool(is_correct),
                 'pc_local': db_pc_ds.tolist(),
                 'pc_global': db_pc_global,
-                'attention_heatmap': point_weights.tolist()
+                'attention_heatmap': point_weights.tolist(),
+                'query_attention_heatmap': q_point_weights.tolist()
             }
             
         visualization_data.append(query_entry)

@@ -161,7 +161,7 @@
                         </div>
                         <hr class="divider">
                         <div class="refinement-timeline">
-                            <h4>Timeline Progress</h4>
+                            <h4>Iterative refinement steps:</h4>
                             <div class="timeline-step" id="timeline-s1">
                                 <div class="step-dot">1</div>
                                 <div class="step-details">
@@ -217,7 +217,9 @@
                     <div class="card-header">
                         <h3>RGB Global Pointcloud Map (Centered 3D)</h3>
                         <div class="header-controls">
-                            <button id="btn-toggle-heatmap" class="btn btn-secondary">Toggle Attention Heatmap</button>
+                            <button id="btn-toggle-query-heatmap" class="btn btn-primary">Query Heatmap: ON</button>
+                            <button id="btn-toggle-retrieved-heatmap" class="btn btn-secondary">Retrieved Heatmap: OFF</button>
+                            <button id="btn-toggle-global-visibility" class="btn btn-primary">Global Map: Visible</button>
                             <span class="help-tooltip" title="3D point cloud of the campus (103k points from trim_umcp_map.las). Orbit with mouse. Query is bright blue, retrieved patch is green/red.">3D Map</span>
                         </div>
                     </div>
@@ -227,6 +229,31 @@
                             <span id="global-map-loading-text" style="font-size: 0.9rem; font-weight: 500; margin-bottom: 10px;">Loading 3D Campus Map... (0%)</span>
                             <div style="width: 200px; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
                                 <div id="global-map-progress-bar" style="width: 0%; height: 100%; background: #00bcff; transition: width 0.05s linear;"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- Map Legend Overlay -->
+                        <div class="map-legend" id="map-legend-3d" style="position: absolute; bottom: 15px; left: 15px; z-index: 5; background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(4px); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); font-size: 0.8rem; display: flex; flex-direction: column; gap: 8px; max-width: 260px; pointer-events: none;">
+                            <div style="font-weight: 700; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 4px; margin-bottom: 2px;">3D Map Legend</div>
+                            <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
+                                <span id="legend-query-color" style="width: 12px; height: 12px; border-radius: 50%; background: linear-gradient(to right, #050530, #00bcff); display: inline-block;"></span>
+                                <span id="legend-query-label" style="color: var(--text-secondary); font-weight: 500;">Query: Height Gradient</span>
+                            </div>
+                            <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
+                                <span id="legend-retrieved-color" style="width: 12px; height: 12px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+                                <span id="legend-retrieved-label" style="color: var(--text-secondary); font-weight: 500;">Retrieved: Correct Match</span>
+                            </div>
+                            <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
+                                <span id="legend-global-color" style="width: 12px; height: 12px; border-radius: 50%; background: linear-gradient(to right, #455a64, #cfd8dc); display: inline-block;"></span>
+                                <span id="legend-global-label" style="color: var(--text-secondary); font-weight: 500;">Global Map: RGB Campus</span>
+                            </div>
+                            <div class="legend-item" style="display: flex; align-items: center; gap: 8px; border-top: 1px dashed var(--border-color); padding-top: 4px; margin-top: 2px;">
+                                <span style="width: 12px; height: 8px; border: 1.5px solid #00bcff; display: inline-block;"></span>
+                                <span style="color: var(--text-secondary); font-weight: 500;">Query Bounding Box (40m)</span>
+                            </div>
+                            <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
+                                <span id="legend-retrieved-box" style="width: 12px; height: 8px; border: 1.5px solid #10b981; display: inline-block;"></span>
+                                <span id="legend-retrieved-box-label" style="color: var(--text-secondary); font-weight: 500;">Retrieved Box (200m)</span>
                             </div>
                         </div>
                     </div>
