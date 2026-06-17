@@ -220,6 +220,7 @@
                             <button id="btn-toggle-query-heatmap" class="btn btn-primary">Query Heatmap: ON</button>
                             <button id="btn-toggle-retrieved-heatmap" class="btn btn-secondary">Retrieved Heatmap: OFF</button>
                             <button id="btn-toggle-global-visibility" class="btn btn-primary">Global Map: Visible</button>
+                            <button id="btn-toggle-aligned-query" class="btn btn-secondary">Aligned Query: OFF</button>
                             <span class="help-tooltip" title="3D point cloud of the campus (103k points from trim_umcp_map.las). Orbit with mouse. Query is bright blue, retrieved patch is green/red.">3D Map</span>
                         </div>
                     </div>
@@ -242,6 +243,10 @@
                             <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
                                 <span id="legend-retrieved-color" style="width: 12px; height: 12px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
                                 <span id="legend-retrieved-label" style="color: var(--text-secondary); font-weight: 500;">Retrieved: Correct Match</span>
+                            </div>
+                            <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
+                                <span id="legend-aligned-color" style="width: 12px; height: 12px; border-radius: 50%; background: #d946ef; display: inline-block;"></span>
+                                <span id="legend-aligned-label" style="color: var(--text-secondary); font-weight: 500;">Aligned Query (ICP)</span>
                             </div>
                             <div class="legend-item" style="display: flex; align-items: center; gap: 8px;">
                                 <span id="legend-global-color" style="width: 12px; height: 12px; border-radius: 50%; background: linear-gradient(to right, #455a64, #cfd8dc); display: inline-block;"></span>
@@ -354,6 +359,7 @@
                         <div class="header-controls">
                             <button id="traj-btn-toggle-trail" class="btn btn-primary traj-toggle-btn">Trail: ON</button>
                             <button id="traj-btn-toggle-retrieved" class="btn btn-primary traj-toggle-btn">Retrieved: ON</button>
+                            <button id="traj-btn-toggle-aligned" class="btn btn-secondary traj-toggle-btn">Aligned Query: OFF</button>
                         </div>
                     </div>
                     <div id="traj-3d-map" class="map-container traj-map-container" style="position: relative;">

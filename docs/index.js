@@ -7,6 +7,7 @@ let isAnimating = false;
 let isQueryHeatmap = true;
 let isRetrievedHeatmap = false;
 let isGlobalMapVisible = true;
+let isAlignedQueryVisible = false;
 
 // Viewers state
 const localViewers = {
@@ -27,6 +28,7 @@ let mapPointsLayerGroup = null;
 // Three.js Global overlays
 let globalQueryPointsObj = null;
 let globalRetrievedPointsObj = null;
+let globalAlignedPointsObj = null;
 let globalQueryBoxObj = null;
 let globalRetrievedBoxObj = null;
 let globalMapObj = null;
@@ -446,6 +448,247 @@ function initGlobal3dViewer() {
             renderActiveStepState();
         }
     });
+
+    const btnAlignedQuery = document.getElementById('btn-toggle-aligned-query');
+    btnAlignedQuery.addEventListener('click', () => {
+        isAlignedQueryVisible = !isAlignedQueryVisible;
+        if (isAlignedQueryVisible) {
+            btnAlignedQuery.textContent = "Aligned Query: ON";
+            btnAlignedQuery.classList.replace('btn-secondary', 'btn-primary');
+        } else {
+            btnAlignedQuery.textContent = "Aligned Query: OFF";
+            btnAlignedQuery.classList.replace('btn-primary', 'btn-secondary');
+            // Stop any running animations
+            if (activeIcpAnimation) {
+                clearInterval(activeIcpAnimation);
+                activeIcpAnimation = null;
+            }
+        }
+        if (currentQuery) {
+            renderActiveStepState();
+        }
+    });
+
+    // Active animation handle
+    let activeIcpAnimation = null;
+
+    // Helper functions for 3D matrix math and SVD (Kabsch alignment)
+    function solveKabsch(sourcePts, targetPts, sourceWeights, targetWeights) {
+        // sourcePts: array of [x, y, z], targetPts: array of [x, y, z]
+        // Weights: arrays of numbers
+        const N = sourcePts.length;
+        if (N === 0 || targetPts.length === 0) return { R: [[1,0,0],[0,1,0],[0,0,1]], T: [0,0,0] };
+
+        // 1. Compute weighted centroids
+        let sumW = 0;
+        let centroidSrc = [0, 0, 0];
+        let centroidTgt = [0, 0, 0];
+
+        for (let i = 0; i < N; i++) {
+            // Match with target point
+            const src = sourcePts[i];
+            const tgt = targetPts[i] || [0,0,0];
+            const w = (sourceWeights ? sourceWeights[i] : 1.0) * (targetWeights ? targetWeights[i] : 1.0);
+            sumW += w;
+            centroidSrc[0] += w * src[0];
+            centroidSrc[1] += w * src[1];
+            centroidSrc[2] += w * src[2];
+            centroidTgt[0] += w * tgt[0];
+            centroidTgt[1] += w * tgt[1];
+            centroidTgt[2] += w * tgt[2];
+        }
+
+        if (sumW < 1e-6) {
+            sumW = 1.0;
+        }
+
+        centroidSrc[0] /= sumW;
+        centroidSrc[1] /= sumW;
+        centroidSrc[2] /= sumW;
+        centroidTgt[0] /= sumW;
+        centroidTgt[1] /= sumW;
+        centroidTgt[2] /= sumW;
+
+        // 2. Compute cross-covariance matrix H (3x3)
+        const H = [
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0]
+        ];
+
+        for (let i = 0; i < N; i++) {
+            const src = sourcePts[i];
+            const tgt = targetPts[i] || [0,0,0];
+            const w = (sourceWeights ? sourceWeights[i] : 1.0) * (targetWeights ? targetWeights[i] : 1.0);
+
+            const dxSrc = src[0] - centroidSrc[0];
+            const dySrc = src[1] - centroidSrc[1];
+            const dzSrc = src[2] - centroidSrc[2];
+
+            const dxTgt = tgt[0] - centroidTgt[0];
+            const dyTgt = tgt[1] - centroidTgt[1];
+            const dzTgt = tgt[2] - centroidTgt[2];
+
+            H[0][0] += w * dxSrc * dxTgt;
+            H[0][1] += w * dxSrc * dyTgt;
+            H[0][2] += w * dxSrc * dzTgt;
+
+            H[1][0] += w * dySrc * dxTgt;
+            H[1][1] += w * dySrc * dyTgt;
+            H[1][2] += w * dySrc * dzTgt;
+
+            H[2][0] += w * dzSrc * dxTgt;
+            H[2][1] += w * dzSrc * dyTgt;
+            H[2][2] += w * dzSrc * dzTgt;
+        }
+
+        // 3. Singular Value Decomposition (SVD) of H = U * S * V^T
+        // For 3x3 matrices, we can use a basic Jacobi SVD solver
+        const svd = svd3x3(H);
+        const U = svd.U;
+        const V = svd.V;
+
+        // R = V * U^T
+        const R = [
+            [0,0,0],
+            [0,0,0],
+            [0,0,0]
+        ];
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                R[i][j] = V[i][0]*U[j][0] + V[i][1]*U[j][1] + V[i][2]*U[j][2];
+            }
+        }
+
+        // Handle reflection
+        const det = R[0][0]*(R[1][1]*R[2][2] - R[1][2]*R[2][1]) -
+                    R[0][1]*(R[1][0]*R[2][2] - R[1][2]*R[2][0]) +
+                    R[0][2]*(R[1][0]*R[2][1] - R[1][1]*R[2][0]);
+
+        if (det < 0) {
+            // Adjust last column of V to handle reflection
+            for (let i = 0; i < 3; i++) {
+                V[i][2] = -V[i][2];
+            }
+            // Recompute R
+            for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 3; j++) {
+                    R[i][j] = V[i][0]*U[j][0] + V[i][1]*U[j][1] + V[i][2]*U[j][2];
+                }
+            }
+        }
+
+        // T = centroidTgt - R * centroidSrc
+        const T = [
+            centroidTgt[0] - (R[0][0]*centroidSrc[0] + R[0][1]*centroidSrc[1] + R[0][2]*centroidSrc[2]),
+            centroidTgt[1] - (R[1][0]*centroidSrc[0] + R[1][1]*centroidSrc[1] + R[1][2]*centroidSrc[2]),
+            centroidTgt[2] - (R[2][0]*centroidSrc[0] + R[2][1]*centroidSrc[1] + R[2][2]*centroidSrc[2])
+        ];
+
+        return { R, T };
+    }
+
+    // Jacobi SVD solver for 3x3 matrix
+    function svd3x3(A) {
+        // Fast Jacobi method for symmetric matrices applied to A^T * A to find V, then U.
+        // For general A:
+        const V = [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1]
+        ];
+        // Calculate S = A^T * A
+        const S = [
+            [0,0,0],
+            [0,0,0],
+            [0,0,0]
+        ];
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                S[i][j] = A[0][i]*A[0][j] + A[1][i]*A[1][j] + A[2][i]*A[2][j];
+            }
+        }
+
+        // Jacobi rotation to diagonalize S (finding eigenvalues/eigenvectors V)
+        const maxSweep = 15;
+        for (let sweep = 0; sweep < maxSweep; sweep++) {
+            let offDiag = Math.abs(S[0][1]) + Math.abs(S[0][2]) + Math.abs(S[1][2]);
+            if (offDiag < 1e-10) break;
+
+            for (let p = 0; p < 2; p++) {
+                for (let q = p + 1; q < 3; q++) {
+                    const diff = S[q][q] - S[p][p];
+                    if (Math.abs(S[p][q]) < 1e-12) continue;
+
+                    let t;
+                    if (Math.abs(diff) < 1e-12) {
+                        t = S[p][q] > 0 ? 1 : -1;
+                    } else {
+                        const phi = diff / (2.0 * S[p][q]);
+                        t = Math.sign(phi) / (Math.abs(phi) + Math.sqrt(phi * phi + 1.0));
+                    }
+                    const c = 1.0 / Math.sqrt(t * t + 1.0);
+                    const s = t * c;
+
+                    // Update S
+                    const S_pp = S[p][p];
+                    const S_qq = S[q][q];
+                    const S_pq = S[p][q];
+
+                    S[p][p] = c * c * S_pp - 2.0 * c * s * S_pq + s * s * S_qq;
+                    S[q][q] = s * s * S_pp + 2.0 * c * s * S_pq + c * c * S_qq;
+                    S[p][q] = S[q][p] = 0.0;
+
+                    for (let r = 0; r < 3; r++) {
+                        if (r !== p && r !== q) {
+                            const S_rp = S[r][p];
+                            const S_rq = S[r][q];
+                            S[r][p] = S[p][r] = c * S_rp - s * S_rq;
+                            S[r][q] = S[q][r] = s * S_rp + c * S_rq;
+                        }
+                    }
+
+                    // Update V
+                    for (let r = 0; r < 3; r++) {
+                        const V_rp = V[r][p];
+                        const V_rq = V[r][q];
+                        V[r][p] = c * V_rp - s * V_rq;
+                        V[r][q] = s * V_rp + c * V_rq;
+                    }
+                }
+            }
+        }
+
+        // Now singular values are eigenvalues' square roots
+        const s0 = Math.sqrt(Math.max(0, S[0][0]));
+        const s1 = Math.sqrt(Math.max(0, S[1][1]));
+        const s2 = Math.sqrt(Math.max(0, S[2][2]));
+
+        // Calculate U: U = A * V * inv(Sigma)
+        const U = [
+            [0,0,0],
+            [0,0,0],
+            [0,0,0]
+        ];
+        for (let i = 0; i < 3; i++) {
+            U[i][0] = A[i][0]*V[0][0] + A[i][1]*V[1][0] + A[i][2]*V[2][0];
+            U[i][1] = A[i][0]*V[0][1] + A[i][1]*V[1][1] + A[i][2]*V[2][1];
+            U[i][2] = A[i][0]*V[0][2] + A[i][1]*V[1][2] + A[i][2]*V[2][2];
+        }
+
+        // Normalize columns of U
+        const n0 = Math.sqrt(U[0][0]*U[0][0] + U[1][0]*U[1][0] + U[2][0]*U[2][0]) || 1;
+        const n1 = Math.sqrt(U[0][1]*U[0][1] + U[1][1]*U[1][1] + U[2][1]*U[2][1]) || 1;
+        const n2 = Math.sqrt(U[0][2]*U[0][2] + U[1][2]*U[1][2] + U[2][2]*U[2][2]) || 1;
+
+        for (let i = 0; i < 3; i++) {
+            U[i][0] /= n0;
+            U[i][1] /= n1;
+            U[i][2] /= n2;
+        }
+
+        return { U, V };
+    }
     
     // Resize handler
     window.addEventListener('resize', () => {
@@ -512,6 +755,18 @@ function initGlobal3dViewer() {
                 globalRetrievedBoxObj.geometry.dispose();
                 globalRetrievedBoxObj.material.dispose();
                 globalRetrievedBoxObj = null;
+            }
+            if (globalAlignedPointsObj) {
+                scene.remove(globalAlignedPointsObj);
+                globalAlignedPointsObj.geometry.dispose();
+                globalAlignedPointsObj.material.dispose();
+                globalAlignedPointsObj = null;
+            }
+
+            // Stop any running ICP animation
+            if (activeIcpAnimation) {
+                clearInterval(activeIcpAnimation);
+                activeIcpAnimation = null;
             }
             
             // Global map is loaded once and static, no update needed here
@@ -625,6 +880,124 @@ function initGlobal3dViewer() {
             globalRetrievedBoxObj = new THREE.LineSegments(rEdges, rBoxMat);
             globalRetrievedBoxObj.position.set(rX, rY, rZ + 100);
             scene.add(globalRetrievedBoxObj);
+
+            // 5. Aligned Query Point Cloud & Fitting Animation
+            if (isAlignedQueryVisible) {
+                // Initialize aligned points with the query point cloud, scaled and placed at the query's location
+                // We'll then animate it shifting to the retrieved location!
+                const alignedGeom = new THREE.BufferGeometry();
+                const alignedPos = new Float32Array(qPcLocal.length * 3);
+                
+                // Start points at the current Query coordinates
+                qPcLocal.forEach((pt, i) => {
+                    alignedPos[i * 3] = qX + pt[0] * 100.0;
+                    alignedPos[i * 3 + 1] = qY + pt[1] * 100.0;
+                    alignedPos[i * 3 + 2] = qZ + pt[2] * 100.0 + 1.5;
+                });
+                
+                alignedGeom.setAttribute('position', new THREE.BufferAttribute(alignedPos, 3));
+                
+                // Color aligned points magenta
+                const alignedColors = new Float32Array(qPcLocal.length * 3);
+                for (let i = 0; i < qPcLocal.length; i++) {
+                    alignedColors[i * 3] = 0.85; // red
+                    alignedColors[i * 3 + 1] = 0.27; // green
+                    alignedColors[i * 3 + 2] = 0.94; // blue
+                }
+                alignedGeom.setAttribute('color', new THREE.BufferAttribute(alignedColors, 3));
+
+                const alignedMat = new THREE.PointsMaterial({
+                    size: 6.5,
+                    vertexColors: true,
+                    map: createRingTexture(),
+                    transparent: true,
+                    opacity: 0.95,
+                    depthWrite: false
+                });
+
+                globalAlignedPointsObj = new THREE.Points(alignedGeom, alignedMat);
+                scene.add(globalAlignedPointsObj);
+
+                // Run visual ICP animation
+                // Start source points at local query coordinates (scaled by 100)
+                let currentSourcePts = qPcLocal.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
+                // Target points are local retrieved coordinates (scaled by 100)
+                const targetPts = rPcLocal.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
+
+                let iter = 0;
+                const maxIcpIterations = 25;
+
+                activeIcpAnimation = setInterval(() => {
+                    if (iter >= maxIcpIterations || !globalAlignedPointsObj) {
+                        clearInterval(activeIcpAnimation);
+                        activeIcpAnimation = null;
+                        return;
+                    }
+
+                    // 1. Association: For each source point, find the closest target point
+                    const matchedTargetPts = [];
+                    const matchedTargetWeights = [];
+                    for (let i = 0; i < currentSourcePts.length; i++) {
+                        const sPt = currentSourcePts[i];
+                        let bestDistSq = Infinity;
+                        let bestTgt = targetPts[0];
+                        let bestIdx = 0;
+
+                        // Simple nearest neighbor search
+                        for (let j = 0; j < targetPts.length; j++) {
+                            const tPt = targetPts[j];
+                            const dx = sPt[0] - tPt[0];
+                            const dy = sPt[1] - tPt[1];
+                            const dz = sPt[2] - tPt[2];
+                            const distSq = dx * dx + dy * dy + dz * dz;
+                            if (distSq < bestDistSq) {
+                                bestDistSq = distSq;
+                                bestTgt = tPt;
+                                bestIdx = j;
+                            }
+                        }
+                        matchedTargetPts.push(bestTgt);
+                        matchedTargetWeights.push(attentionHeatmap ? attentionHeatmap[bestIdx] : 1.0);
+                    }
+
+                    // 2. Solve Kabsch using attention heatmaps as weights
+                    const solveResult = solveKabsch(
+                        currentSourcePts, 
+                        matchedTargetPts, 
+                        queryAttentionHeatmap, 
+                        matchedTargetWeights
+                    );
+
+                    const R = solveResult.R;
+                    const T = solveResult.T;
+
+                    // 3. Apply transformation locally, then render globally at retrieved position
+                    // We interpolate the global position from current Query to Retrieved location to animate the translation!
+                    const t = Math.min(1.0, (iter + 1) / maxIcpIterations);
+                    const currentGlobalX = qX + (rX - qX) * t;
+                    const currentGlobalY = qY + (rY - qY) * t;
+                    const currentGlobalZ = qZ + (rZ - qZ) * t;
+
+                    const positions = globalAlignedPointsObj.geometry.attributes.position.array;
+                    for (let i = 0; i < currentSourcePts.length; i++) {
+                        const p = currentSourcePts[i];
+                        // Transform local coordinate
+                        const nx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2] + T[0];
+                        const ny = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2] + T[1];
+                        const nz = R[2][0] * p[0] * 0.95 + R[2][1] * p[1] * 0.95 + R[2][2] * p[2] + T[2]; // slight scale correction on Z if needed
+
+                        currentSourcePts[i] = [nx, ny, nz];
+
+                        // Set global positions
+                        positions[i * 3] = nx + currentGlobalX;
+                        positions[i * 3 + 1] = ny + currentGlobalY;
+                        positions[i * 3 + 2] = nz + currentGlobalZ + 1.5;
+                    }
+
+                    globalAlignedPointsObj.geometry.attributes.position.needsUpdate = true;
+                    iter++;
+                }, 40); // 40ms per step
+            }
             
             // Focus camera dynamically on the actual local terrain height only when changing query
             if (resetCamera) {
@@ -884,6 +1257,7 @@ function animateRefinement() {
     let trajPlayInterval = null;
     let trajShowTrail = true;
     let trajShowRetrieved = true;
+    let trajShowAligned = false;
     let trajQueryCache = {};  // cache loaded query JSONs
     let trajCurrentQueryData = null;
 
@@ -898,8 +1272,12 @@ function animateRefinement() {
     let trajActiveTrailObj = null; // partial trail up to current index
     let trajQueryCloudObj = null;
     let trajRetrievedCloudObj = null;
+    let trajAlignedCloudObj = null;
     let trajCurrentDotObj = null;
     let trajRetrievedDotObj = null;
+
+    // Active animation handle for trajectory ICP
+    let trajIcpInterval = null;
 
     // Trajectory local viewers
     let trajLocalQuery = null;
@@ -1141,14 +1519,19 @@ function animateRefinement() {
         if (!stepData) return;
 
         // Remove previous query / retrieved clouds + markers
-        [trajQueryCloudObj, trajRetrievedCloudObj, trajCurrentDotObj, trajRetrievedDotObj].forEach(obj => {
+        [trajQueryCloudObj, trajRetrievedCloudObj, trajCurrentDotObj, trajRetrievedDotObj, trajAlignedCloudObj].forEach(obj => {
             if (obj) {
                 traj3dScene.remove(obj);
                 obj.geometry.dispose();
                 obj.material.dispose();
             }
         });
-        trajQueryCloudObj = trajRetrievedCloudObj = trajCurrentDotObj = trajRetrievedDotObj = null;
+        trajQueryCloudObj = trajRetrievedCloudObj = trajCurrentDotObj = trajRetrievedDotObj = trajAlignedCloudObj = null;
+
+        if (trajIcpInterval) {
+            clearInterval(trajIcpInterval);
+            trajIcpInterval = null;
+        }
 
         const qX = queryData.easting - UTM_E_ORIGIN;
         const qY = queryData.northing - UTM_N_ORIGIN;
@@ -1234,6 +1617,118 @@ function animateRefinement() {
             });
             trajRetrievedDotObj = new THREE.Points(rDotGeom, rDotMat);
             traj3dScene.add(trajRetrievedDotObj);
+        }
+
+        // Aligned Query Point Cloud for Trajectory
+        if (trajShowAligned) {
+            const alignedGeom = new THREE.BufferGeometry();
+            const alignedPos = new Float32Array(queryData.pc_local.length * 3);
+            
+            // Start points at the current Query coordinates
+            queryData.pc_local.forEach((pt, i) => {
+                alignedPos[i * 3] = qX + pt[0] * 100.0;
+                alignedPos[i * 3 + 1] = qY + pt[1] * 100.0;
+                alignedPos[i * 3 + 2] = qZ + pt[2] * 100.0 + 1.5;
+            });
+            
+            alignedGeom.setAttribute('position', new THREE.BufferAttribute(alignedPos, 3));
+            
+            // Color aligned points magenta
+            const alignedColors = new Float32Array(queryData.pc_local.length * 3);
+            for (let i = 0; i < queryData.pc_local.length; i++) {
+                alignedColors[i * 3] = 0.85; // red
+                alignedColors[i * 3 + 1] = 0.27; // green
+                alignedColors[i * 3 + 2] = 0.94; // blue
+            }
+            alignedGeom.setAttribute('color', new THREE.BufferAttribute(alignedColors, 3));
+
+            const alignedMat = new THREE.PointsMaterial({
+                size: 6.5,
+                vertexColors: true,
+                map: createRingTexture(),
+                transparent: true,
+                opacity: 0.95,
+                depthWrite: false
+            });
+
+            trajAlignedCloudObj = new THREE.Points(alignedGeom, alignedMat);
+            traj3dScene.add(trajAlignedCloudObj);
+
+            // Run visual ICP animation
+            // Start source points at local query coordinates (scaled by 100)
+            let currentSourcePts = queryData.pc_local.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
+            // Target points are local retrieved coordinates (scaled by 100)
+            const targetPts = stepData.pc_local.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
+
+            let iter = 0;
+            const maxIcpIterations = 25;
+
+            trajIcpInterval = setInterval(() => {
+                if (iter >= maxIcpIterations || !trajAlignedCloudObj) {
+                    clearInterval(trajIcpInterval);
+                    trajIcpInterval = null;
+                    return;
+                }
+
+                // 1. Association
+                const matchedTargetPts = [];
+                const matchedTargetWeights = [];
+                for (let i = 0; i < currentSourcePts.length; i++) {
+                    const sPt = currentSourcePts[i];
+                    let bestDistSq = Infinity;
+                    let bestTgt = targetPts[0];
+                    let bestIdx = 0;
+
+                    for (let j = 0; j < targetPts.length; j++) {
+                        const tPt = targetPts[j];
+                        const dx = sPt[0] - tPt[0];
+                        const dy = sPt[1] - tPt[1];
+                        const dz = sPt[2] - tPt[2];
+                        const distSq = dx * dx + dy * dy + dz * dz;
+                        if (distSq < bestDistSq) {
+                            bestDistSq = distSq;
+                            bestTgt = tPt;
+                            bestIdx = j;
+                        }
+                    }
+                    matchedTargetPts.push(bestTgt);
+                    matchedTargetWeights.push(stepData.attention_heatmap ? stepData.attention_heatmap[bestIdx] : 1.0);
+                }
+
+                // 2. Solve Kabsch using attention heatmaps as weights
+                const solveResult = solveKabsch(
+                    currentSourcePts, 
+                    matchedTargetPts, 
+                    stepData.query_attention_heatmap, 
+                    matchedTargetWeights
+                );
+
+                const R = solveResult.R;
+                const T = solveResult.T;
+
+                // 3. Apply transformation locally, then render globally at retrieved position
+                const t = Math.min(1.0, (iter + 1) / maxIcpIterations);
+                const currentGlobalX = qX + (rX - qX) * t;
+                const currentGlobalY = qY + (rY - qY) * t;
+                const currentGlobalZ = qZ + (rZ - qZ) * t;
+
+                const positions = trajAlignedCloudObj.geometry.attributes.position.array;
+                for (let i = 0; i < currentSourcePts.length; i++) {
+                    const p = currentSourcePts[i];
+                    const nx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2] + T[0];
+                    const ny = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2] + T[1];
+                    const nz = R[2][0] * p[0] * 0.95 + R[2][1] * p[1] * 0.95 + R[2][2] * p[2] + T[2];
+
+                    currentSourcePts[i] = [nx, ny, nz];
+
+                    positions[i * 3] = nx + currentGlobalX;
+                    positions[i * 3 + 1] = ny + currentGlobalY;
+                    positions[i * 3 + 2] = nz + currentGlobalZ + 1.5;
+                }
+
+                trajAlignedCloudObj.geometry.attributes.position.needsUpdate = true;
+                iter++;
+            }, 40);
         }
 
         // Trail visibility
@@ -1398,6 +1893,27 @@ function animateRefinement() {
                     btnRetrieved.classList.replace('btn-secondary', 'btn-primary');
                 } else {
                     btnRetrieved.classList.replace('btn-primary', 'btn-secondary');
+                }
+                if (trajCurrentQueryData) {
+                    trajGoToIndex(trajCurrentIdx);
+                }
+            });
+        }
+
+        // Toggle aligned
+        const btnAligned = document.getElementById('traj-btn-toggle-aligned');
+        if (btnAligned) {
+            btnAligned.addEventListener('click', () => {
+                trajShowAligned = !trajShowAligned;
+                btnAligned.textContent = `Aligned Query: ${trajShowAligned ? 'ON' : 'OFF'}`;
+                if (trajShowAligned) {
+                    btnAligned.classList.replace('btn-secondary', 'btn-primary');
+                } else {
+                    btnAligned.classList.replace('btn-primary', 'btn-secondary');
+                    if (trajIcpInterval) {
+                        clearInterval(trajIcpInterval);
+                        trajIcpInterval = null;
+                    }
                 }
                 if (trajCurrentQueryData) {
                     trajGoToIndex(trajCurrentIdx);
