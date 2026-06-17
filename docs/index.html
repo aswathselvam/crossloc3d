@@ -261,6 +261,133 @@
             </div>
         </section>
 
+        <!-- Continuous Trajectory Playback Section -->
+        <section class="trajectory-section card" id="trajectory-section">
+            <div class="vis-header">
+                <h2 class="section-title">Continuous Trajectory Playback (umd_gps_3)</h2>
+                <div class="traj-status-pill" id="traj-status-pill">
+                    <span class="traj-status-dot"></span>
+                    <span id="traj-status-text">Loading trajectory...</span>
+                </div>
+            </div>
+
+            <div class="trajectory-layout">
+                <!-- Left: Controls & Info -->
+                <div class="traj-controls-panel card-inner">
+                    <h3 class="subsection-title">Trajectory Controls</h3>
+
+                    <!-- Timestamp slider -->
+                    <div class="traj-slider-wrap">
+                        <label for="traj-slider" class="traj-slider-label">
+                            Slider to slide through <strong id="traj-total-count">54</strong> timestamps.
+                        </label>
+                        <input type="range" id="traj-slider" min="0" max="53" value="0" class="styled-slider traj-slider">
+                        <div class="traj-slider-endpoints">
+                            <span id="traj-slider-start">0</span>
+                            <span id="traj-slider-current" class="traj-slider-current-label">0 / 54</span>
+                            <span id="traj-slider-end">53</span>
+                        </div>
+                    </div>
+
+                    <!-- Playback buttons -->
+                    <div class="traj-playback-btns">
+                        <button id="traj-btn-prev" class="btn btn-secondary traj-btn" title="Previous timestamp">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+                        </button>
+                        <button id="traj-btn-play" class="btn btn-secondary traj-btn traj-btn-play" title="Play / Pause">
+                            <svg id="traj-play-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                            <svg id="traj-pause-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                        </button>
+                        <button id="traj-btn-next" class="btn btn-secondary traj-btn" title="Next timestamp">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+                        </button>
+                    </div>
+
+                    <!-- Speed control -->
+                    <div class="traj-speed-control">
+                        <label>Playback speed:</label>
+                        <select id="traj-speed" class="styled-select traj-speed-select">
+                            <option value="2000">0.5x (Slow)</option>
+                            <option value="1000" selected>1x (Normal)</option>
+                            <option value="500">2x (Fast)</option>
+                            <option value="250">4x (Very Fast)</option>
+                        </select>
+                    </div>
+
+                    <!-- Active step for trajectory -->
+                    <div class="traj-step-control">
+                        <label>Refinement Step:</label>
+                        <div class="traj-step-btns">
+                            <button class="btn traj-step-btn active" data-step="1">Step 1</button>
+                            <button class="btn traj-step-btn" data-step="2">Step 2</button>
+                            <button class="btn traj-step-btn" data-step="3">Step 3</button>
+                        </div>
+                    </div>
+
+                    <hr class="divider">
+
+                    <!-- Current query info -->
+                    <div class="traj-info-block">
+                        <div class="info-group">
+                            <span class="info-label">Current File:</span>
+                            <span id="traj-info-file" class="info-value file-path">--</span>
+                        </div>
+                        <div class="info-group">
+                            <span class="info-label">Lat / Lon:</span>
+                            <span id="traj-info-latlon" class="info-value">--</span>
+                        </div>
+                        <div class="info-group">
+                            <span class="info-label">Retrieved Distance:</span>
+                            <span id="traj-info-dist" class="info-value">--</span>
+                        </div>
+                        <div class="info-group">
+                            <span class="info-label">Retrieval Result:</span>
+                            <span id="traj-info-result" class="badge">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Trajectory Map (reuses Global 3D Map style) -->
+                <div class="traj-map-panel card-inner">
+                    <div class="card-header">
+                        <h3>Trajectory on Global 3D Map</h3>
+                        <div class="header-controls">
+                            <button id="traj-btn-toggle-trail" class="btn btn-primary traj-toggle-btn">Trail: ON</button>
+                            <button id="traj-btn-toggle-retrieved" class="btn btn-primary traj-toggle-btn">Retrieved: ON</button>
+                        </div>
+                    </div>
+                    <div id="traj-3d-map" class="map-container traj-map-container" style="position: relative;">
+                        <div id="traj-map-loading" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(248, 250, 252, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; font-family: inherit; color: #64748b;">
+                            <span style="font-size: 0.9rem; font-weight: 500;">Waiting for global map data...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom row: local viewers for trajectory query -->
+            <div class="traj-local-viewers">
+                <h3 class="subsection-title">Trajectory Query / Retrieved Point Clouds</h3>
+                <div class="local-viewers-grid traj-viewers-grid">
+                    <div class="viewer-card" id="traj-card-query">
+                        <div class="card-header">
+                            <h3>Trajectory Query (Ground)</h3>
+                            <span class="badge badge-query">Query</span>
+                        </div>
+                        <div class="canvas-container" id="traj-canvas-query"></div>
+                        <div class="card-footer">Moving query point cloud</div>
+                    </div>
+                    <div class="viewer-card" id="traj-card-retrieved">
+                        <div class="card-header">
+                            <h3>Retrieved (Aerial)</h3>
+                            <span class="badge" id="traj-badge-retrieved">--</span>
+                        </div>
+                        <div class="canvas-container" id="traj-canvas-retrieved"></div>
+                        <div class="card-footer" id="traj-dist-retrieved">Distance: -- m</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- BibTeX Section -->
         <section class="bibtex-section card">
             <h2 class="section-title">BibTeX</h2>

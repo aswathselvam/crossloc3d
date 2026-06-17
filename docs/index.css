@@ -722,3 +722,213 @@ body {
     text-align: left;
     margin: 0;
 }
+
+/* ============================================================
+   Trajectory Playback Section
+   ============================================================ */
+
+.trajectory-section {
+    border: 1px solid var(--border-color);
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.traj-status-pill {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.85rem;
+    border-radius: 50px;
+    background: rgba(var(--accent-blue-rgb), 0.06);
+    border: 1px solid rgba(var(--accent-blue-rgb), 0.15);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--accent-blue);
+    transition: all var(--transition-speed);
+}
+
+.traj-status-pill.ready {
+    background: rgba(16, 185, 129, 0.06);
+    border-color: rgba(16, 185, 129, 0.2);
+    color: var(--accent-green);
+}
+
+.traj-status-pill.playing {
+    background: rgba(245, 158, 11, 0.06);
+    border-color: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+}
+
+.traj-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+.trajectory-layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 1.5rem;
+    align-items: stretch;
+    margin-bottom: 1.5rem;
+}
+
+@media (max-width: 1024px) {
+    .trajectory-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.traj-controls-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.traj-slider-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.traj-slider-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+.traj-slider-label strong {
+    color: var(--accent-blue);
+}
+
+.traj-slider {
+    margin-top: 0.25rem;
+}
+
+.traj-slider-endpoints {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin-top: 0.25rem;
+}
+
+.traj-slider-current-label {
+    font-size: 0.85rem;
+    color: var(--accent-blue);
+    font-weight: 700;
+    background: rgba(var(--accent-blue-rgb), 0.06);
+    padding: 0.15rem 0.6rem;
+    border-radius: 4px;
+}
+
+.traj-playback-btns {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: center;
+}
+
+.traj-btn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 40px !important;
+    min-width: 40px;
+    height: 36px;
+    padding: 0 !important;
+}
+
+.traj-btn-play {
+    width: 56px !important;
+    min-width: 56px;
+    height: 40px;
+    border-radius: 8px !important;
+    background: var(--accent-blue) !important;
+    color: #ffffff !important;
+    border-color: var(--accent-blue) !important;
+}
+
+.traj-btn-play:hover {
+    background: #1d4ed8 !important;
+    box-shadow: 0 0 16px rgba(var(--accent-blue-rgb), 0.35) !important;
+}
+
+.traj-speed-control, .traj-step-control {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.traj-speed-control label, .traj-step-control label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.traj-speed-select {
+    padding: 0.35rem 0.8rem !important;
+    font-size: 0.8rem !important;
+}
+
+.traj-step-btns {
+    display: flex;
+    gap: 0.35rem;
+}
+
+.traj-step-btn {
+    flex: 1;
+    padding: 0.35rem 0.5rem !important;
+    font-size: 0.78rem !important;
+    border-radius: 6px !important;
+    transition: all 0.2s;
+}
+
+.traj-step-btn.active {
+    background: var(--accent-blue) !important;
+    color: #ffffff !important;
+    border-color: var(--accent-blue) !important;
+    box-shadow: 0 0 8px rgba(var(--accent-blue-rgb), 0.25);
+}
+
+.traj-info-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+}
+
+.traj-map-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.traj-map-container {
+    flex: 1;
+    min-height: 400px;
+}
+
+.traj-local-viewers {
+    margin-top: 0.5rem;
+}
+
+.traj-viewers-grid {
+    grid-template-columns: 1fr 1fr !important;
+}
+
+.traj-toggle-btn {
+    font-size: 0.75rem !important;
+    padding: 0.3rem 0.7rem !important;
+}
+

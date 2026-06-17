@@ -870,3 +870,597 @@ function animateRefinement() {
         }
     }, 1200); // 1.2s delay per step
 }
+
+// ============================================================
+// TRAJECTORY PLAYBACK MODULE
+// ============================================================
+
+(function() {
+    // Trajectory state
+    let trajMetadata = [];
+    let trajCurrentIdx = 0;
+    let trajCurrentStep = 1;
+    let trajIsPlaying = false;
+    let trajPlayInterval = null;
+    let trajShowTrail = true;
+    let trajShowRetrieved = true;
+    let trajQueryCache = {};  // cache loaded query JSONs
+    let trajCurrentQueryData = null;
+
+    // Trajectory Three.js state
+    let traj3dScene = null;
+    let traj3dCamera = null;
+    let traj3dRenderer = null;
+    let traj3dControls = null;
+    let trajGlobalMapObj = null;
+    let trajTrailLineObj = null;
+    let trajTrailDotsObj = null;
+    let trajActiveTrailObj = null; // partial trail up to current index
+    let trajQueryCloudObj = null;
+    let trajRetrievedCloudObj = null;
+    let trajCurrentDotObj = null;
+    let trajRetrievedDotObj = null;
+
+    // Trajectory local viewers
+    let trajLocalQuery = null;
+    let trajLocalRetrieved = null;
+
+    // UTM origin (same as main viewer)
+    const UTM_E_ORIGIN = 332100.0;
+    const UTM_N_ORIGIN = 4317500.0;
+
+    // Wait for DOM
+    window.addEventListener('DOMContentLoaded', () => {
+        initTrajectoryModule();
+    });
+
+    async function initTrajectoryModule() {
+        try {
+            const res = await fetch('trajectory_metadata.json');
+            trajMetadata = await res.json();
+            console.log(`Loaded trajectory metadata: ${trajMetadata.length} points.`);
+
+            const totalEl = document.getElementById('traj-total-count');
+            if (totalEl) totalEl.textContent = trajMetadata.length;
+
+            const slider = document.getElementById('traj-slider');
+            if (slider) {
+                slider.max = trajMetadata.length - 1;
+            }
+            const endLabel = document.getElementById('traj-slider-end');
+            if (endLabel) endLabel.textContent = trajMetadata.length - 1;
+
+            // Init trajectory 3D viewer
+            initTraj3dViewer();
+
+            // Init local viewers for trajectory
+            trajLocalQuery = createLocalViewer('traj-canvas-query', 'query');
+            trajLocalRetrieved = createLocalViewer('traj-canvas-retrieved', 'step-1');
+
+            // Setup controls
+            setupTrajControls();
+
+            // Update status
+            const pill = document.getElementById('traj-status-pill');
+            const statusText = document.getElementById('traj-status-text');
+            if (pill) pill.classList.add('ready');
+            if (statusText) statusText.textContent = `${trajMetadata.length} timestamps ready`;
+
+            // Load first point
+            await trajGoToIndex(0);
+
+        } catch (err) {
+            console.error('Failed to init trajectory module:', err);
+            const statusText = document.getElementById('traj-status-text');
+            if (statusText) statusText.textContent = 'Failed to load trajectory data';
+        }
+    }
+
+    function initTraj3dViewer() {
+        const container = document.getElementById('traj-3d-map');
+        if (!container) return;
+
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+
+        traj3dScene = new THREE.Scene();
+        traj3dScene.background = new THREE.Color(0xf1f5f9);
+
+        traj3dCamera = new THREE.PerspectiveCamera(45, width / height, 1, 10000);
+        traj3dCamera.up.set(0, 0, 1);
+
+        traj3dRenderer = new THREE.WebGLRenderer({ antialias: true });
+        traj3dRenderer.setSize(width, height);
+        traj3dRenderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(traj3dRenderer.domElement);
+
+        traj3dControls = new THREE.OrbitControls(traj3dCamera, traj3dRenderer.domElement);
+        traj3dControls.enableDamping = true;
+        traj3dControls.dampingFactor = 0.05;
+        traj3dControls.enableZoom = true;
+        traj3dControls.maxPolarAngle = Math.PI / 2 - 0.01;
+
+        // Add global map placeholder (will fill once globalMapData is available)
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+        geom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(0), 3));
+        const mat = new THREE.PointsMaterial({ size: 1.5, vertexColors: true });
+        trajGlobalMapObj = new THREE.Points(geom, mat);
+        traj3dScene.add(trajGlobalMapObj);
+
+        // Build full trajectory trail
+        buildTrajectoryTrail();
+
+        // Set initial camera
+        if (trajMetadata.length > 0) {
+            const firstPt = trajMetadata[0];
+            const midPt = trajMetadata[Math.floor(trajMetadata.length / 2)];
+            const cx = (firstPt.easting + midPt.easting) / 2 - UTM_E_ORIGIN;
+            const cy = (firstPt.northing + midPt.northing) / 2 - UTM_N_ORIGIN;
+            traj3dCamera.position.set(cx, cy - 120, 100);
+            traj3dControls.target.set(cx, cy, 30);
+            traj3dControls.update();
+        }
+
+        // Resize
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            traj3dCamera.aspect = w / h;
+            traj3dCamera.updateProjectionMatrix();
+            traj3dRenderer.setSize(w, h);
+        });
+
+        // Animate
+        function animate() {
+            requestAnimationFrame(animate);
+            traj3dControls.update();
+            traj3dRenderer.render(traj3dScene, traj3dCamera);
+        }
+        animate();
+
+        // Attempt to fill global map data (it may already be loaded from main viewer)
+        fillTrajGlobalMap();
+    }
+
+    function fillTrajGlobalMap() {
+        if (globalMapData && globalMapData.length > 0 && trajGlobalMapObj) {
+            trajGlobalMapObj.geometry.setAttribute('position', new THREE.BufferAttribute(globalMapData.positions, 3));
+            trajGlobalMapObj.geometry.setAttribute('color', new THREE.BufferAttribute(globalMapData.colors, 3, true));
+            trajGlobalMapObj.geometry.attributes.position.needsUpdate = true;
+            trajGlobalMapObj.geometry.attributes.color.needsUpdate = true;
+            trajGlobalMapObj.geometry.computeBoundingSphere();
+
+            // Hide loading overlay
+            const loader = document.getElementById('traj-map-loading');
+            if (loader) loader.style.display = 'none';
+        } else {
+            // Retry later (global map still loading)
+            setTimeout(fillTrajGlobalMap, 500);
+        }
+    }
+
+    function buildTrajectoryTrail() {
+        if (!traj3dScene || trajMetadata.length < 2) return;
+
+        // Full trail as a line
+        const positions = [];
+        const colors = [];
+        trajMetadata.forEach((pt, i) => {
+            const x = pt.easting - UTM_E_ORIGIN;
+            const y = pt.northing - UTM_N_ORIGIN;
+            const z = 32.0; // slightly above ground
+            positions.push(x, y, z);
+            // Gradient from cyan to white along the path
+            const t = i / (trajMetadata.length - 1);
+            colors.push(0.0 + t * 0.7, 0.74 - t * 0.2, 1.0 - t * 0.3);
+        });
+
+        const lineGeom = new THREE.BufferGeometry();
+        lineGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        lineGeom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        const lineMat = new THREE.LineBasicMaterial({
+            vertexColors: true,
+            linewidth: 2,
+            transparent: true,
+            opacity: 0.25
+        });
+        trajTrailLineObj = new THREE.Line(lineGeom, lineMat);
+        traj3dScene.add(trajTrailLineObj);
+
+        // Trail dots at each position
+        const dotGeom = new THREE.BufferGeometry();
+        dotGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        dotGeom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        const dotMat = new THREE.PointsMaterial({
+            size: 4.0,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.3
+        });
+        trajTrailDotsObj = new THREE.Points(dotGeom, dotMat);
+        traj3dScene.add(trajTrailDotsObj);
+    }
+
+    function updateActiveTrail(upToIdx) {
+        // Remove previous active trail
+        if (trajActiveTrailObj) {
+            traj3dScene.remove(trajActiveTrailObj);
+            trajActiveTrailObj.geometry.dispose();
+            trajActiveTrailObj.material.dispose();
+            trajActiveTrailObj = null;
+        }
+
+        if (upToIdx < 1) return;
+
+        const positions = [];
+        const colors = [];
+        for (let i = 0; i <= upToIdx && i < trajMetadata.length; i++) {
+            const pt = trajMetadata[i];
+            const x = pt.easting - UTM_E_ORIGIN;
+            const y = pt.northing - UTM_N_ORIGIN;
+            const z = 33.0; // slightly above the faint trail
+            positions.push(x, y, z);
+            // Bright cyan -> blue
+            const t = i / Math.max(upToIdx, 1);
+            colors.push(0.0, 0.74 * (1 - t * 0.3), 1.0);
+        }
+
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        const mat = new THREE.LineBasicMaterial({
+            vertexColors: true,
+            linewidth: 3,
+            transparent: true,
+            opacity: 0.9
+        });
+        trajActiveTrailObj = new THREE.Line(geom, mat);
+        traj3dScene.add(trajActiveTrailObj);
+    }
+
+    function getGroundHeightTraj(x, y, radius) {
+        radius = radius || 25;
+        if (!globalMapData || !globalMapData.positions) return 30.0;
+        let sumZ = 0, count = 0;
+        const len = globalMapData.length;
+        const pos = globalMapData.positions;
+        for (let i = 0; i < len; i++) {
+            const dx = pos[i * 3] - x;
+            const dy = pos[i * 3 + 1] - y;
+            if (dx * dx + dy * dy < radius * radius) {
+                sumZ += pos[i * 3 + 2];
+                count++;
+            }
+        }
+        return count > 0 ? sumZ / count : 30.0;
+    }
+
+    function updateTraj3dOverlays(queryData, stepStr, resetCamera) {
+        const stepData = queryData.steps[stepStr];
+        if (!stepData) return;
+
+        // Remove previous query / retrieved clouds + markers
+        [trajQueryCloudObj, trajRetrievedCloudObj, trajCurrentDotObj, trajRetrievedDotObj].forEach(obj => {
+            if (obj) {
+                traj3dScene.remove(obj);
+                obj.geometry.dispose();
+                obj.material.dispose();
+            }
+        });
+        trajQueryCloudObj = trajRetrievedCloudObj = trajCurrentDotObj = trajRetrievedDotObj = null;
+
+        const qX = queryData.easting - UTM_E_ORIGIN;
+        const qY = queryData.northing - UTM_N_ORIGIN;
+        const rX = stepData.easting - UTM_E_ORIGIN;
+        const rY = stepData.northing - UTM_N_ORIGIN;
+        const qZ = getGroundHeightTraj(qX, qY);
+        const rZ = getGroundHeightTraj(rX, rY);
+
+        // Query point cloud
+        const qGeom = new THREE.BufferGeometry();
+        const qPos = [], qColors = [];
+        let qZMin = Infinity, qZMax = -Infinity;
+        queryData.pc_local.forEach(pt => {
+            if (pt[2] < qZMin) qZMin = pt[2];
+            if (pt[2] > qZMax) qZMax = pt[2];
+        });
+        queryData.pc_local.forEach((pt, i) => {
+            qPos.push(qX + pt[0] * 100, qY + pt[1] * 100, qZ + pt[2] * 100 + 1.5);
+            const normZ = (qZMax - qZMin) > 0 ? (pt[2] - qZMin) / (qZMax - qZMin) : 0.5;
+            // Check if we have query attention heatmap for this step
+            const qHeatmap = stepData.query_attention_heatmap;
+            if (qHeatmap && qHeatmap.length > i) {
+                const w = qHeatmap[i];
+                const r = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.5))));
+                const g = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.25))));
+                const b = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * w)));
+                qColors.push(r, g, b);
+            } else {
+                qColors.push(0.1 + normZ * 0.6, 0.3 + normZ * 0.6, 1.0);
+            }
+        });
+        qGeom.setAttribute('position', new THREE.Float32BufferAttribute(qPos, 3));
+        qGeom.setAttribute('color', new THREE.Float32BufferAttribute(qColors, 3));
+        const qMat = new THREE.PointsMaterial({
+            size: 6.0, vertexColors: true, map: createRingTexture(),
+            transparent: true, opacity: 0.9, depthWrite: false
+        });
+        trajQueryCloudObj = new THREE.Points(qGeom, qMat);
+        traj3dScene.add(trajQueryCloudObj);
+
+        // Current position marker (bright sphere sprite)
+        const dotGeom = new THREE.BufferGeometry();
+        dotGeom.setAttribute('position', new THREE.Float32BufferAttribute([qX, qY, qZ + 5], 3));
+        const dotMat = new THREE.PointsMaterial({
+            size: 12, color: 0x00bcff, transparent: true, opacity: 1.0,
+            map: createRingTexture(), depthWrite: false
+        });
+        trajCurrentDotObj = new THREE.Points(dotGeom, dotMat);
+        traj3dScene.add(trajCurrentDotObj);
+
+        // Retrieved point cloud
+        if (trajShowRetrieved) {
+            const rGeom = new THREE.BufferGeometry();
+            const rPos = [], rColors = [];
+            stepData.pc_local.forEach((pt, i) => {
+                rPos.push(rX + pt[0] * 100, rY + pt[1] * 100, rZ + pt[2] * 100 + 1.5);
+                const heatmap = stepData.attention_heatmap;
+                if (heatmap && heatmap.length > i) {
+                    const w = heatmap[i];
+                    const r = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.5))));
+                    const g = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.25))));
+                    const b = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * w)));
+                    rColors.push(r, g, b);
+                } else {
+                    const c = new THREE.Color(stepData.is_correct ? 0x10b981 : 0xef4444);
+                    rColors.push(c.r, c.g, c.b);
+                }
+            });
+            rGeom.setAttribute('position', new THREE.Float32BufferAttribute(rPos, 3));
+            rGeom.setAttribute('color', new THREE.Float32BufferAttribute(rColors, 3));
+            const rMat = new THREE.PointsMaterial({
+                size: 3.5, vertexColors: true, transparent: true, opacity: 0.85
+            });
+            trajRetrievedCloudObj = new THREE.Points(rGeom, rMat);
+            traj3dScene.add(trajRetrievedCloudObj);
+
+            // Retrieved dot
+            const rDotGeom = new THREE.BufferGeometry();
+            rDotGeom.setAttribute('position', new THREE.Float32BufferAttribute([rX, rY, rZ + 5], 3));
+            const rDotMat = new THREE.PointsMaterial({
+                size: 10, color: stepData.is_correct ? 0x10b981 : 0xef4444,
+                transparent: true, opacity: 0.9, depthWrite: false
+            });
+            trajRetrievedDotObj = new THREE.Points(rDotGeom, rDotMat);
+            traj3dScene.add(trajRetrievedDotObj);
+        }
+
+        // Trail visibility
+        if (trajTrailLineObj) trajTrailLineObj.visible = trajShowTrail;
+        if (trajTrailDotsObj) trajTrailDotsObj.visible = trajShowTrail;
+        if (trajActiveTrailObj) trajActiveTrailObj.visible = trajShowTrail;
+
+        if (resetCamera) {
+            traj3dControls.target.set(qX, qY, qZ);
+            traj3dCamera.position.set(qX, qY - 80, qZ + 60);
+            traj3dControls.update();
+        }
+    }
+
+    async function trajGoToIndex(idx) {
+        if (idx < 0 || idx >= trajMetadata.length) return;
+        trajCurrentIdx = idx;
+
+        // Update slider
+        const slider = document.getElementById('traj-slider');
+        if (slider) slider.value = idx;
+        const currentLabel = document.getElementById('traj-slider-current');
+        if (currentLabel) currentLabel.textContent = `${idx} / ${trajMetadata.length}`;
+
+        // Load query data (with cache)
+        let queryData = trajQueryCache[idx];
+        if (!queryData) {
+            try {
+                const res = await fetch(`trajectories/query_${idx}.json`);
+                queryData = await res.json();
+                trajQueryCache[idx] = queryData;
+            } catch (err) {
+                console.error(`Failed to load trajectory query ${idx}:`, err);
+                return;
+            }
+        }
+        trajCurrentQueryData = queryData;
+
+        const stepStr = trajCurrentStep.toString();
+        const stepData = queryData.steps[stepStr];
+
+        // Update info panel
+        const fileEl = document.getElementById('traj-info-file');
+        const latlonEl = document.getElementById('traj-info-latlon');
+        const distEl = document.getElementById('traj-info-dist');
+        const resultEl = document.getElementById('traj-info-result');
+        if (fileEl) fileEl.textContent = queryData.query_file.split('/').pop();
+        if (latlonEl) latlonEl.textContent = `${queryData.lat.toFixed(6)}, ${queryData.lon.toFixed(6)}`;
+        if (stepData) {
+            if (distEl) distEl.textContent = `${stepData.dist_to_query_meters.toFixed(2)} m`;
+            if (resultEl) {
+                resultEl.textContent = stepData.is_correct ? 'Correct' : 'Incorrect';
+                resultEl.className = 'badge ' + (stepData.is_correct ? 'badge-correct' : 'badge-incorrect');
+            }
+        }
+
+        // Update local viewers
+        if (trajLocalQuery) {
+            trajLocalQuery.updatePoints(queryData.pc_local);
+        }
+        if (trajLocalRetrieved && stepData) {
+            trajLocalRetrieved.updatePoints(stepData.pc_local, stepData.is_correct);
+        }
+
+        // Update badge
+        const badge = document.getElementById('traj-badge-retrieved');
+        if (badge && stepData) {
+            badge.className = 'badge ' + (stepData.is_correct ? 'badge-correct' : 'badge-incorrect');
+            badge.textContent = stepData.is_correct ? 'Correct' : 'Incorrect';
+        }
+        const distFooter = document.getElementById('traj-dist-retrieved');
+        if (distFooter && stepData) {
+            distFooter.textContent = `Distance: ${stepData.dist_to_query_meters.toFixed(2)} m`;
+        }
+
+        // Update active trail line
+        updateActiveTrail(idx);
+
+        // Update 3D overlays (don't reset camera during playback)
+        const shouldResetCamera = (idx === 0 && !trajIsPlaying);
+        updateTraj3dOverlays(queryData, stepStr, shouldResetCamera);
+    }
+
+    function setupTrajControls() {
+        // Slider
+        const slider = document.getElementById('traj-slider');
+        if (slider) {
+            slider.addEventListener('input', (e) => {
+                const idx = parseInt(e.target.value);
+                trajGoToIndex(idx);
+            });
+        }
+
+        // Play/Pause
+        const btnPlay = document.getElementById('traj-btn-play');
+        const playIcon = document.getElementById('traj-play-icon');
+        const pauseIcon = document.getElementById('traj-pause-icon');
+        if (btnPlay) {
+            btnPlay.addEventListener('click', () => {
+                if (trajIsPlaying) {
+                    trajStop();
+                } else {
+                    trajPlay();
+                }
+            });
+        }
+
+        // Prev/Next
+        const btnPrev = document.getElementById('traj-btn-prev');
+        const btnNext = document.getElementById('traj-btn-next');
+        if (btnPrev) {
+            btnPrev.addEventListener('click', () => {
+                trajStop();
+                trajGoToIndex(Math.max(0, trajCurrentIdx - 1));
+            });
+        }
+        if (btnNext) {
+            btnNext.addEventListener('click', () => {
+                trajStop();
+                trajGoToIndex(Math.min(trajMetadata.length - 1, trajCurrentIdx + 1));
+            });
+        }
+
+        // Step buttons
+        document.querySelectorAll('.traj-step-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const step = parseInt(e.currentTarget.dataset.step);
+                trajCurrentStep = step;
+                document.querySelectorAll('.traj-step-btn').forEach(b => b.classList.remove('active'));
+                e.currentTarget.classList.add('active');
+                // Re-render current position with new step
+                if (trajCurrentQueryData) {
+                    trajGoToIndex(trajCurrentIdx);
+                }
+            });
+        });
+
+        // Toggle trail
+        const btnTrail = document.getElementById('traj-btn-toggle-trail');
+        if (btnTrail) {
+            btnTrail.addEventListener('click', () => {
+                trajShowTrail = !trajShowTrail;
+                btnTrail.textContent = `Trail: ${trajShowTrail ? 'ON' : 'OFF'}`;
+                if (trajShowTrail) {
+                    btnTrail.classList.replace('btn-secondary', 'btn-primary');
+                } else {
+                    btnTrail.classList.replace('btn-primary', 'btn-secondary');
+                }
+                if (trajTrailLineObj) trajTrailLineObj.visible = trajShowTrail;
+                if (trajTrailDotsObj) trajTrailDotsObj.visible = trajShowTrail;
+                if (trajActiveTrailObj) trajActiveTrailObj.visible = trajShowTrail;
+            });
+        }
+
+        // Toggle retrieved
+        const btnRetrieved = document.getElementById('traj-btn-toggle-retrieved');
+        if (btnRetrieved) {
+            btnRetrieved.addEventListener('click', () => {
+                trajShowRetrieved = !trajShowRetrieved;
+                btnRetrieved.textContent = `Retrieved: ${trajShowRetrieved ? 'ON' : 'OFF'}`;
+                if (trajShowRetrieved) {
+                    btnRetrieved.classList.replace('btn-secondary', 'btn-primary');
+                } else {
+                    btnRetrieved.classList.replace('btn-primary', 'btn-secondary');
+                }
+                if (trajCurrentQueryData) {
+                    trajGoToIndex(trajCurrentIdx);
+                }
+            });
+        }
+    }
+
+    function trajPlay() {
+        if (trajIsPlaying) return;
+        trajIsPlaying = true;
+
+        const playIcon = document.getElementById('traj-play-icon');
+        const pauseIcon = document.getElementById('traj-pause-icon');
+        if (playIcon) playIcon.style.display = 'none';
+        if (pauseIcon) pauseIcon.style.display = '';
+
+        const pill = document.getElementById('traj-status-pill');
+        const statusText = document.getElementById('traj-status-text');
+        if (pill) { pill.classList.remove('ready'); pill.classList.add('playing'); }
+        if (statusText) statusText.textContent = 'Playing...';
+
+        // If at end, restart
+        if (trajCurrentIdx >= trajMetadata.length - 1) {
+            trajCurrentIdx = 0;
+        }
+
+        function advance() {
+            if (!trajIsPlaying) return;
+            const nextIdx = trajCurrentIdx + 1;
+            if (nextIdx >= trajMetadata.length) {
+                trajStop();
+                return;
+            }
+            trajGoToIndex(nextIdx).then(() => {
+                if (trajIsPlaying) {
+                    const speed = parseInt(document.getElementById('traj-speed').value) || 1000;
+                    trajPlayInterval = setTimeout(advance, speed);
+                }
+            });
+        }
+
+        const speed = parseInt(document.getElementById('traj-speed').value) || 1000;
+        trajPlayInterval = setTimeout(advance, speed);
+    }
+
+    function trajStop() {
+        trajIsPlaying = false;
+        if (trajPlayInterval) {
+            clearTimeout(trajPlayInterval);
+            trajPlayInterval = null;
+        }
+
+        const playIcon = document.getElementById('traj-play-icon');
+        const pauseIcon = document.getElementById('traj-pause-icon');
+        if (playIcon) playIcon.style.display = '';
+        if (pauseIcon) pauseIcon.style.display = 'none';
+
+        const pill = document.getElementById('traj-status-pill');
+        const statusText = document.getElementById('traj-status-text');
+        if (pill) { pill.classList.remove('playing'); pill.classList.add('ready'); }
+        if (statusText) statusText.textContent = `${trajMetadata.length} timestamps ready`;
+    }
+
+})();
+
