@@ -247,7 +247,7 @@ body {
 }
 
 .viewer-card {
-    background: var(--bg-main);
+    background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     padding: 1rem;
@@ -256,6 +256,14 @@ body {
     transition: all var(--transition-speed);
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.02);
     position: relative;
+}
+
+.viewer-card h3, .viewer-card h2 {
+    color: var(--text-primary);
+}
+
+.viewer-card .card-footer {
+    color: var(--text-secondary);
 }
 
 .viewer-card:hover {
@@ -299,11 +307,11 @@ body {
 
 .canvas-container {
     height: 180px;
-    background: #f1f5f9;
-    border-radius: 8px;
+    background: #000000;
     position: relative;
     overflow: hidden;
-    border: 1px solid rgba(0, 0, 0, 0.04);
+    border: 1px solid #1e293b;
+    border-radius: 8px;
 }
 
 .card-footer {
@@ -344,10 +352,41 @@ body {
 /* Lower Section Split Panel Layout */
 .global-vis-grid {
     display: grid;
-    grid-template-columns: 320px 1fr 1fr;
+    grid-template-columns: 320px 1.5fr 0.75fr;
     gap: 1.5rem;
     align-items: stretch;
 }
+
+/* Map Button Tints (Green for ON, Grey for OFF) */
+.global-3d-section .header-controls .btn-primary,
+.traj-map-panel .header-controls .btn-primary {
+    background: rgba(16, 185, 129, 0.1) !important;
+    border-color: rgba(16, 185, 129, 0.3) !important;
+    color: #10b981 !important;
+    box-shadow: none !important;
+}
+.global-3d-section .header-controls .btn-primary:hover,
+.traj-map-panel .header-controls .btn-primary:hover {
+    background: #10b981 !important;
+    color: #ffffff !important;
+    border-color: #10b981 !important;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.3) !important;
+}
+.global-3d-section .header-controls .btn-secondary,
+.traj-map-panel .header-controls .btn-secondary {
+    background: rgba(100, 116, 139, 0.1) !important;
+    border-color: rgba(100, 116, 139, 0.3) !important;
+    color: #64748b !important;
+    box-shadow: none !important;
+}
+.global-3d-section .header-controls .btn-secondary:hover,
+.traj-map-panel .header-controls .btn-secondary:hover {
+    background: #64748b !important;
+    color: #ffffff !important;
+    border-color: #64748b !important;
+    box-shadow: 0 0 12px rgba(100, 116, 139, 0.3) !important;
+}
+
 
 .card {
     background: var(--bg-card);

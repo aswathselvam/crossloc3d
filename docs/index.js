@@ -65,7 +65,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         const metaRes = await fetch('metadata.json');
         appData = await metaRes.json();
         console.log(`Loaded ${appData.length} query metadata.`);
-        
+
         // Populate Select
         selectQuery.innerHTML = '';
         appData.forEach((item) => {
@@ -74,35 +74,35 @@ window.addEventListener('DOMContentLoaded', async () => {
             opt.textContent = `${item.location} - Query ${item.query_idx} (${item.category})`;
             selectQuery.appendChild(opt);
         });
-        
+
         // Init Leaflet Map
         initLeafletMap();
-        
+
         // Init Three.js local viewers
         initLocalViewers();
-        
+
         // Init Three.js global 3D viewer (with empty global map initially)
         initGlobal3dViewer();
-        
+
         // Setup Event Listeners
         selectQuery.addEventListener('change', (e) => {
             selectQueryIndex(parseInt(e.target.value));
         });
-        
+
         sliderStep.addEventListener('input', (e) => {
             setActiveStep(parseInt(e.target.value));
         });
-        
+
         btnPlay.addEventListener('click', animateRefinement);
-        
+
         // Select first query by default
         if (appData.length > 0) {
             selectQueryIndex(appData[0].query_idx);
         }
-        
+
         // Load the global map in background asynchronously
         loadGlobalMap();
-        
+
     } catch (err) {
         console.error("Initialization failed:", err);
     }
@@ -113,14 +113,14 @@ async function loadGlobalMap() {
     try {
         console.log("Loading global map in background...");
         const response = await fetch('visuals/global_map_downsampled.bin').catch(() => fetch('visuals/global_map_downsampled.json'));
-        
+
         const isBin = response.url.endsWith('.bin');
         let buffer;
-        
+
         if (isBin) {
             const contentLength = response.headers.get('content-length');
             const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-            
+
             if (!response.body || totalBytes === 0) {
                 // Fallback if ReadableStream is not supported or content-length is missing
                 buffer = await response.arrayBuffer();
@@ -128,21 +128,21 @@ async function loadGlobalMap() {
                 const reader = response.body.getReader();
                 const progressBar = document.getElementById('global-map-progress-bar');
                 const loadingText = document.getElementById('global-map-loading-text');
-                
+
                 let receivedBytes = 0;
                 const chunks = [];
-                
+
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
                     chunks.push(value);
                     receivedBytes += value.length;
-                    
+
                     const pct = Math.round((receivedBytes / totalBytes) * 100);
                     if (progressBar) progressBar.style.width = `${pct}%`;
                     if (loadingText) loadingText.textContent = `Loading 3D Campus Map... (${pct}%)`;
                 }
-                
+
                 // Concatenate chunks
                 const allChunks = new Uint8Array(receivedBytes);
                 let position = 0;
@@ -152,7 +152,7 @@ async function loadGlobalMap() {
                 }
                 buffer = allChunks.buffer;
             }
-            
+
             const view = new DataView(buffer);
             const numPoints = view.getUint32(0, true);
             const floatView = new Float32Array(buffer, 4, numPoints * 3);
@@ -167,13 +167,13 @@ async function loadGlobalMap() {
             };
         }
         console.log(`Global map loaded in background: ${globalMapData.length} points.`);
-        
+
         // Hide loader overlay if present
         const loader = document.getElementById('global-map-loading');
         if (loader) {
             loader.style.display = 'none';
         }
-        
+
         // Update Three.js global map geometry with the full map
         if (globalMapObj) {
             globalMapObj.geometry.setAttribute('position', new THREE.BufferAttribute(globalMapData.positions, 3));
@@ -183,7 +183,7 @@ async function loadGlobalMap() {
             globalMapObj.geometry.computeBoundingSphere();
             globalMapObj.visible = isGlobalMapVisible;
         }
-        
+
         // Force rendering overlays if query was selected prior to loading completion
         if (currentQuery) {
             renderActiveStepState(true);
@@ -200,13 +200,13 @@ function initLeafletMap() {
         zoomControl: true,
         preferCanvas: true // Use canvas renderer for point cloud plotting
     }).setView([38.9904, -76.9375], 16);
-    
+
     // Add Esri Satellite Layer
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
         attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, GeoEye, Aerogrid, IGN, and the GIS User Community',
         maxZoom: 19
     }).addTo(leafletMap);
-    
+
     mapPointsLayerGroup = L.layerGroup().addTo(leafletMap);
 }
 
@@ -223,27 +223,27 @@ function createLocalViewer(elementId, type) {
     const container = document.getElementById(elementId);
     const width = container.clientWidth;
     const height = container.clientHeight;
-    
+
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf1f5f9);
-    
+    scene.background = new THREE.Color(0x000000);
+
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     camera.up.set(0, 0, 1); // Set Z as up vector to match point cloud coordinates
     camera.position.set(0, -3, 1);
-    
+
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(renderer.domElement);
-    
+
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controls.enableZoom = true;
     controls.maxPolarAngle = Math.PI / 2; // Restrict viewing below ground level
-    
+
     let pointsObj = null;
-    
+
     // Resize handler
     window.addEventListener('resize', () => {
         const w = container.clientWidth;
@@ -252,7 +252,7 @@ function createLocalViewer(elementId, type) {
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
     });
-    
+
     // Animation loop
     function animate() {
         requestAnimationFrame(animate);
@@ -260,7 +260,7 @@ function createLocalViewer(elementId, type) {
         renderer.render(scene, camera);
     }
     animate();
-    
+
     return {
         updatePoints(pointsArray, isCorrect = true) {
             // Clear existing
@@ -270,13 +270,13 @@ function createLocalViewer(elementId, type) {
                 pointsObj.material.dispose();
                 pointsObj = null;
             }
-            
+
             if (!pointsArray || pointsArray.length === 0) return;
-            
+
             const geometry = new THREE.BufferGeometry();
             const positions = [];
             const colors = [];
-            
+
             // Calculate height ranges for color gradient mapping
             let zMin = Infinity, zMax = -Infinity;
             pointsArray.forEach(pt => {
@@ -284,15 +284,15 @@ function createLocalViewer(elementId, type) {
                 if (z < zMin) zMin = z;
                 if (z > zMax) zMax = z;
             });
-            
+
             pointsArray.forEach(pt => {
                 const x = pt[0];
                 const y = pt[1];
                 const z = pt[2];
                 positions.push(x, y, z);
-                
+
                 const normZ = (zMax - zMin) > 0 ? (z - zMin) / (zMax - zMin) : 0.5;
-                
+
                 if (type === 'query') {
                     // Blue height-gradient: Dark blue (bottom) to light blue/cyan (top)
                     const r = 0.1 + normZ * 0.6; // some red to lighten
@@ -314,20 +314,20 @@ function createLocalViewer(elementId, type) {
                     }
                 }
             });
-            
+
             geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
             geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-            
+
             const material = new THREE.PointsMaterial({
                 size: 0.05,
                 vertexColors: true,
                 transparent: true,
                 opacity: 0.85
             });
-            
+
             pointsObj = new THREE.Points(geometry, material);
             scene.add(pointsObj);
-            
+
             // Adjust camera view
             geometry.computeBoundingSphere();
             const sphere = geometry.boundingSphere;
@@ -346,7 +346,7 @@ function createRingTexture() {
     canvas.width = 64;
     canvas.height = 64;
     const ctx = canvas.getContext('2d');
-    
+
     // Clear and draw a thick ring (hollow circle)
     ctx.clearRect(0, 0, 64, 64);
     ctx.beginPath();
@@ -354,7 +354,7 @@ function createRingTexture() {
     ctx.lineWidth = 10;
     ctx.strokeStyle = '#ffffff';
     ctx.stroke();
-    
+
     const texture = new THREE.CanvasTexture(canvas);
     return texture;
 }
@@ -364,43 +364,43 @@ function initGlobal3dViewer() {
     const container = document.getElementById('global-3d-map');
     const width = container.clientWidth;
     const height = container.clientHeight;
-    
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xf1f5f9);
-    
+
     const camera = new THREE.PerspectiveCamera(45, width / height, 1, 10000);
     camera.up.set(0, 0, 1); // Set Z as up vector
     camera.position.set(0, -1000, 500);
-    
+
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(renderer.domElement);
-    
+
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controls.enableZoom = true;
     controls.maxPolarAngle = Math.PI / 2 - 0.01; // Don't orbit below ground
-    
+
     // Add static RGB Global Map points (initially empty)
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(0);
     const colors = new Float32Array(0);
-    
+
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    
+
     const material = new THREE.PointsMaterial({
         size: 1.5,
         vertexColors: true,
         transparent: false
     });
-    
+
     globalMapObj = new THREE.Points(geometry, material);
     scene.add(globalMapObj);
     console.log("RGB Global Map points loaded in Three.js Scene.");
-    
+
     const btnQueryHeatmap = document.getElementById('btn-toggle-query-heatmap');
     btnQueryHeatmap.addEventListener('click', () => {
         isQueryHeatmap = !isQueryHeatmap;
@@ -477,7 +477,7 @@ function initGlobal3dViewer() {
         // sourcePts: array of [x, y, z], targetPts: array of [x, y, z]
         // Weights: arrays of numbers
         const N = sourcePts.length;
-        if (N === 0 || targetPts.length === 0) return { R: [[1,0,0],[0,1,0],[0,0,1]], T: [0,0,0] };
+        if (N === 0 || targetPts.length === 0) return { R: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], T: [0, 0, 0] };
 
         // 1. Compute weighted centroids
         let sumW = 0;
@@ -487,7 +487,7 @@ function initGlobal3dViewer() {
         for (let i = 0; i < N; i++) {
             // Match with target point
             const src = sourcePts[i];
-            const tgt = targetPts[i] || [0,0,0];
+            const tgt = targetPts[i] || [0, 0, 0];
             const w = (sourceWeights ? sourceWeights[i] : 1.0) * (targetWeights ? targetWeights[i] : 1.0);
             sumW += w;
             centroidSrc[0] += w * src[0];
@@ -518,7 +518,7 @@ function initGlobal3dViewer() {
 
         for (let i = 0; i < N; i++) {
             const src = sourcePts[i];
-            const tgt = targetPts[i] || [0,0,0];
+            const tgt = targetPts[i] || [0, 0, 0];
             const w = (sourceWeights ? sourceWeights[i] : 1.0) * (targetWeights ? targetWeights[i] : 1.0);
 
             const dxSrc = src[0] - centroidSrc[0];
@@ -550,20 +550,20 @@ function initGlobal3dViewer() {
 
         // R = V * U^T
         const R = [
-            [0,0,0],
-            [0,0,0],
-            [0,0,0]
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0]
         ];
         for (let i = 0; i < 3; i++) {
             for (let j = 0; j < 3; j++) {
-                R[i][j] = V[i][0]*U[j][0] + V[i][1]*U[j][1] + V[i][2]*U[j][2];
+                R[i][j] = V[i][0] * U[j][0] + V[i][1] * U[j][1] + V[i][2] * U[j][2];
             }
         }
 
         // Handle reflection
-        const det = R[0][0]*(R[1][1]*R[2][2] - R[1][2]*R[2][1]) -
-                    R[0][1]*(R[1][0]*R[2][2] - R[1][2]*R[2][0]) +
-                    R[0][2]*(R[1][0]*R[2][1] - R[1][1]*R[2][0]);
+        const det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
+            R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
+            R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
 
         if (det < 0) {
             // Adjust last column of V to handle reflection
@@ -573,16 +573,16 @@ function initGlobal3dViewer() {
             // Recompute R
             for (let i = 0; i < 3; i++) {
                 for (let j = 0; j < 3; j++) {
-                    R[i][j] = V[i][0]*U[j][0] + V[i][1]*U[j][1] + V[i][2]*U[j][2];
+                    R[i][j] = V[i][0] * U[j][0] + V[i][1] * U[j][1] + V[i][2] * U[j][2];
                 }
             }
         }
 
         // T = centroidTgt - R * centroidSrc
         const T = [
-            centroidTgt[0] - (R[0][0]*centroidSrc[0] + R[0][1]*centroidSrc[1] + R[0][2]*centroidSrc[2]),
-            centroidTgt[1] - (R[1][0]*centroidSrc[0] + R[1][1]*centroidSrc[1] + R[1][2]*centroidSrc[2]),
-            centroidTgt[2] - (R[2][0]*centroidSrc[0] + R[2][1]*centroidSrc[1] + R[2][2]*centroidSrc[2])
+            centroidTgt[0] - (R[0][0] * centroidSrc[0] + R[0][1] * centroidSrc[1] + R[0][2] * centroidSrc[2]),
+            centroidTgt[1] - (R[1][0] * centroidSrc[0] + R[1][1] * centroidSrc[1] + R[1][2] * centroidSrc[2]),
+            centroidTgt[2] - (R[2][0] * centroidSrc[0] + R[2][1] * centroidSrc[1] + R[2][2] * centroidSrc[2])
         ];
 
         return { R, T };
@@ -599,13 +599,13 @@ function initGlobal3dViewer() {
         ];
         // Calculate S = A^T * A
         const S = [
-            [0,0,0],
-            [0,0,0],
-            [0,0,0]
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0]
         ];
         for (let i = 0; i < 3; i++) {
             for (let j = 0; j < 3; j++) {
-                S[i][j] = A[0][i]*A[0][j] + A[1][i]*A[1][j] + A[2][i]*A[2][j];
+                S[i][j] = A[0][i] * A[0][j] + A[1][i] * A[1][j] + A[2][i] * A[2][j];
             }
         }
 
@@ -666,20 +666,20 @@ function initGlobal3dViewer() {
 
         // Calculate U: U = A * V * inv(Sigma)
         const U = [
-            [0,0,0],
-            [0,0,0],
-            [0,0,0]
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0]
         ];
         for (let i = 0; i < 3; i++) {
-            U[i][0] = A[i][0]*V[0][0] + A[i][1]*V[1][0] + A[i][2]*V[2][0];
-            U[i][1] = A[i][0]*V[0][1] + A[i][1]*V[1][1] + A[i][2]*V[2][1];
-            U[i][2] = A[i][0]*V[0][2] + A[i][1]*V[1][2] + A[i][2]*V[2][2];
+            U[i][0] = A[i][0] * V[0][0] + A[i][1] * V[1][0] + A[i][2] * V[2][0];
+            U[i][1] = A[i][0] * V[0][1] + A[i][1] * V[1][1] + A[i][2] * V[2][1];
+            U[i][2] = A[i][0] * V[0][2] + A[i][1] * V[1][2] + A[i][2] * V[2][2];
         }
 
         // Normalize columns of U
-        const n0 = Math.sqrt(U[0][0]*U[0][0] + U[1][0]*U[1][0] + U[2][0]*U[2][0]) || 1;
-        const n1 = Math.sqrt(U[0][1]*U[0][1] + U[1][1]*U[1][1] + U[2][1]*U[2][1]) || 1;
-        const n2 = Math.sqrt(U[0][2]*U[0][2] + U[1][2]*U[1][2] + U[2][2]*U[2][2]) || 1;
+        const n0 = Math.sqrt(U[0][0] * U[0][0] + U[1][0] * U[1][0] + U[2][0] * U[2][0]) || 1;
+        const n1 = Math.sqrt(U[0][1] * U[0][1] + U[1][1] * U[1][1] + U[2][1] * U[2][1]) || 1;
+        const n2 = Math.sqrt(U[0][2] * U[0][2] + U[1][2] * U[1][2] + U[2][2] * U[2][2]) || 1;
 
         for (let i = 0; i < 3; i++) {
             U[i][0] /= n0;
@@ -689,7 +689,7 @@ function initGlobal3dViewer() {
 
         return { U, V };
     }
-    
+
     // Resize handler
     window.addEventListener('resize', () => {
         const w = container.clientWidth;
@@ -698,7 +698,7 @@ function initGlobal3dViewer() {
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
     });
-    
+
     // Animation loop
     function animate() {
         requestAnimationFrame(animate);
@@ -706,7 +706,7 @@ function initGlobal3dViewer() {
         renderer.render(scene, camera);
     }
     animate();
-    
+
     // Helper to get average height of the global map around a coordinate dynamically
     function getGroundHeight(x, y, radius = 25) {
         if (!globalMapData || !globalMapData.positions) return 30.0;
@@ -768,18 +768,18 @@ function initGlobal3dViewer() {
                 clearInterval(activeIcpAnimation);
                 activeIcpAnimation = null;
             }
-            
+
             // Global map is loaded once and static, no update needed here
- 
+
             // Get local terrain heights to align query and retrieved patches in height with the global map
             const qZ = getGroundHeight(qX, qY);
             const rZ = getGroundHeight(rX, rY);
-            
+
             // 1. Plot Query points globally (using height-fading gradient matching Input Query)
             const qGeom = new THREE.BufferGeometry();
             const qPos = [];
             const qColors = [];
-            
+
             // Calculate height ranges for color gradient mapping
             let qZMin = Infinity, qZMax = -Infinity;
             qPcLocal.forEach(pt => {
@@ -787,13 +787,13 @@ function initGlobal3dViewer() {
                 if (z < qZMin) qZMin = z;
                 if (z > qZMax) qZMax = z;
             });
-            
+
             qPcLocal.forEach((pt, i) => {
                 const x = qX + pt[0] * 100.0;
                 const y = qY + pt[1] * 100.0;
                 const z = qZ + pt[2] * 100.0 + 1.5; // lift slightly above ground to prevent z-fighting
                 qPos.push(x, y, z);
-                
+
                 if (isQueryHeatmap && queryAttentionHeatmap && queryAttentionHeatmap.length > i) {
                     const weight = queryAttentionHeatmap[i];
                     // Turbo-like colormap approximation (Blue -> Green -> Yellow -> Red)
@@ -815,7 +815,7 @@ function initGlobal3dViewer() {
             });
             qGeom.setAttribute('position', new THREE.Float32BufferAttribute(qPos, 3));
             qGeom.setAttribute('color', new THREE.Float32BufferAttribute(qColors, 3));
-            
+
             const qMat = new THREE.PointsMaterial({
                 size: 6.0,
                 vertexColors: true,
@@ -826,7 +826,7 @@ function initGlobal3dViewer() {
             });
             globalQueryPointsObj = new THREE.Points(qGeom, qMat);
             scene.add(globalQueryPointsObj);
-            
+
             // 2. Plot Retrieved points globally
             const rGeom = new THREE.BufferGeometry();
             const rPos = [];
@@ -836,7 +836,7 @@ function initGlobal3dViewer() {
                 const y = rY + pt[1] * 100.0;
                 const z = rZ + pt[2] * 100.0 + 1.5; // lift slightly above ground
                 rPos.push(x, y, z);
-                
+
                 // Assign color based on heatmap if enabled
                 if (isRetrievedHeatmap && attentionHeatmap && attentionHeatmap.length > i) {
                     // Generate a color map (jet or turbo) using the attention weight
@@ -854,7 +854,7 @@ function initGlobal3dViewer() {
             });
             rGeom.setAttribute('position', new THREE.Float32BufferAttribute(rPos, 3));
             rGeom.setAttribute('color', new THREE.Float32BufferAttribute(rColors, 3));
-            
+
             const rMat = new THREE.PointsMaterial({
                 size: 3.5, // slightly larger points for heatmap
                 vertexColors: true,
@@ -871,7 +871,7 @@ function initGlobal3dViewer() {
             globalQueryBoxObj = new THREE.LineSegments(qEdges, qBoxMat);
             globalQueryBoxObj.position.set(qX, qY, qZ + 20); // center box at ground + height offset
             scene.add(globalQueryBoxObj);
-            
+
             // 4. Add Retrieved Bounding Box (200m x 200m x 200m)
             const rBoxGeom = new THREE.BoxGeometry(200, 200, 200);
             const rEdges = new THREE.EdgesGeometry(rBoxGeom);
@@ -887,16 +887,16 @@ function initGlobal3dViewer() {
                 // We'll then animate it shifting to the retrieved location!
                 const alignedGeom = new THREE.BufferGeometry();
                 const alignedPos = new Float32Array(qPcLocal.length * 3);
-                
+
                 // Start points at the current Query coordinates
                 qPcLocal.forEach((pt, i) => {
                     alignedPos[i * 3] = qX + pt[0] * 100.0;
                     alignedPos[i * 3 + 1] = qY + pt[1] * 100.0;
                     alignedPos[i * 3 + 2] = qZ + pt[2] * 100.0 + 1.5;
                 });
-                
+
                 alignedGeom.setAttribute('position', new THREE.BufferAttribute(alignedPos, 3));
-                
+
                 // Color aligned points magenta
                 const alignedColors = new Float32Array(qPcLocal.length * 3);
                 for (let i = 0; i < qPcLocal.length; i++) {
@@ -962,9 +962,9 @@ function initGlobal3dViewer() {
 
                     // 2. Solve Kabsch using attention heatmaps as weights
                     const solveResult = solveKabsch(
-                        currentSourcePts, 
-                        matchedTargetPts, 
-                        queryAttentionHeatmap, 
+                        currentSourcePts,
+                        matchedTargetPts,
+                        queryAttentionHeatmap,
                         matchedTargetWeights
                     );
 
@@ -998,7 +998,7 @@ function initGlobal3dViewer() {
                     iter++;
                 }, 40); // 40ms per step
             }
-            
+
             // Focus camera dynamically on the actual local terrain height only when changing query
             if (resetCamera) {
                 controls.target.set(qX, qY, qZ);
@@ -1014,45 +1014,45 @@ async function selectQueryIndex(queryIdx) {
     try {
         // Disable selector while loading to prevent race conditions
         selectQuery.disabled = true;
-        
+
         console.log(`Fetching query ${queryIdx} details...`);
         const res = await fetch(`queries/query_${queryIdx}.json`);
         currentQuery = await res.json();
         console.log("Loaded query details:", currentQuery);
-        
+
         // Update summary labels safely using textContent
         infoQueryIdx.textContent = currentQuery.query_idx;
         infoQueryFile.textContent = currentQuery.query_file.split('/').pop();
         infoQueryUtm.textContent = `E: ${currentQuery.easting.toFixed(2)} | N: ${currentQuery.northing.toFixed(2)}`;
         infoQueryLatlon.textContent = `${currentQuery.lat.toFixed(6)}, ${currentQuery.lon.toFixed(6)}`;
-        
+
         // Update local query viewer
         localViewers.query.updatePoints(currentQuery.pc_local);
-        
+
         // Update step cards distance labels
         for (let step = 1; step <= 3; step++) {
             const stepData = currentQuery.steps[step.toString()];
             document.getElementById(`dist-step-${step}`).textContent = `Distance: ${stepData.dist_to_query_meters.toFixed(2)} m`;
-            
+
             // Update local viewer for each step card
             localViewers[`step${step}`].updatePoints(stepData.pc_local, stepData.is_correct);
-            
+
             // Update badges
             const badge = document.getElementById(`badge-step-${step}`);
             badge.className = 'badge ' + (stepData.is_correct ? 'badge-correct' : 'badge-incorrect');
             badge.textContent = stepData.is_correct ? 'Correct' : 'Incorrect';
-            
+
             // Update timeline status colors
             const timeline = document.getElementById(`timeline-s${step}`);
             const statusText = document.getElementById(`status-s${step}`);
             timeline.className = 'timeline-step ' + (stepData.is_correct ? 'correct' : 'incorrect');
             statusText.textContent = `${stepData.is_correct ? 'Correct' : 'Incorrect'} (${stepData.dist_to_query_meters.toFixed(1)}m)`;
         }
-        
+
         // Reset to step 3 visual by default
         currentStep = 3;
         sliderStep.value = 3;
-        
+
         // Display current step details on map and 3D global view
         renderActiveStepState(true);
     } catch (err) {
@@ -1071,9 +1071,9 @@ function setActiveStep(step) {
 // Update Map and Global 3D view overlays for active step
 function renderActiveStepState(resetCamera = false) {
     if (!currentQuery) return;
-    
+
     const stepData = currentQuery.steps[currentStep.toString()];
-    
+
     // Update active highlight in timeline
     for (let step = 1; step <= 3; step++) {
         const timeline = document.getElementById(`timeline-s${step}`);
@@ -1083,18 +1083,18 @@ function renderActiveStepState(resetCamera = false) {
             timeline.classList.remove('active');
         }
     }
-    
+
     // Convert centers
     const qLat = currentQuery.lat;
     const qLon = currentQuery.lon;
     const rLat = stepData.lat;
     const rLon = stepData.lon;
-    
+
     // 1. Leaflet map updates
     if (leafletMap) {
         // Clear previous layers
         mapPointsLayerGroup.clearLayers();
-        
+
         // Place query circle (100m)
         queryCircle = L.circle([qLat, qLon], {
             radius: 100,
@@ -1103,7 +1103,7 @@ function renderActiveStepState(resetCamera = false) {
             fillOpacity: 0.1,
             weight: 2
         }).addTo(mapPointsLayerGroup);
-        
+
         // Place query center marker
         queryMarker = L.circleMarker([qLat, qLon], {
             radius: 6,
@@ -1112,7 +1112,7 @@ function renderActiveStepState(resetCamera = false) {
             weight: 1.5,
             fillOpacity: 1.0
         }).bindPopup(`Query Center<br>${qLat.toFixed(6)}, ${qLon.toFixed(6)}`).addTo(mapPointsLayerGroup);
-        
+
         // Place retrieved center marker
         retrievedMarker = L.circleMarker([rLat, rLon], {
             radius: 6,
@@ -1121,14 +1121,14 @@ function renderActiveStepState(resetCamera = false) {
             weight: 1.5,
             fillOpacity: 1.0
         }).bindPopup(`Step ${currentStep} Retrieved Center<br>Dist: ${stepData.dist_to_query_meters.toFixed(2)}m`).addTo(mapPointsLayerGroup);
-        
+
         // Plot query points (magenta dots) globally - scaled by x5 (from 20m to 100m scale)
         currentQuery.pc_global.forEach(pt => {
             const dLat = pt[0] - qLat;
             const dLon = pt[1] - qLon;
             const scaledLat = qLat + dLat * 5.0;
             const scaledLon = qLon + dLon * 5.0;
-            
+
             L.circleMarker([scaledLat, scaledLon], {
                 radius: 1.5,
                 fillColor: '#00bcff',
@@ -1136,7 +1136,7 @@ function renderActiveStepState(resetCamera = false) {
                 fillOpacity: 0.75
             }).addTo(mapPointsLayerGroup);
         });
-        
+
         // Plot retrieved points (green/red dots) globally
         stepData.pc_global.forEach(pt => {
             L.circleMarker([pt[0], pt[1]], {
@@ -1146,7 +1146,7 @@ function renderActiveStepState(resetCamera = false) {
                 fillOpacity: 0.75
             }).addTo(mapPointsLayerGroup);
         });
-        
+
         // Fit map view to include query and retrieval
         const bounds = L.latLngBounds([
             [qLat, qLon],
@@ -1154,7 +1154,7 @@ function renderActiveStepState(resetCamera = false) {
         ]);
         leafletMap.fitBounds(bounds.pad(0.35));
     }
-    
+
     // 2. Three.js Global 3D Map updates
     if (global3dViewer) {
         // Centered coordinates around UTM origin
@@ -1162,7 +1162,7 @@ function renderActiveStepState(resetCamera = false) {
         const qY = currentQuery.northing - 4317500.0;
         const rX = stepData.easting - 332100.0;
         const rY = stepData.northing - 4317500.0;
-        
+
         global3dViewer.updateOverlays(
             qX, qY, currentQuery.pc_local,
             rX, rY, stepData.pc_local,
@@ -1227,10 +1227,10 @@ function animateRefinement() {
     if (isAnimating || !currentQuery) return;
     isAnimating = true;
     btnPlay.disabled = true;
-    
+
     let step = 1;
     setActiveStep(step);
-    
+
     const interval = setInterval(() => {
         step++;
         if (step > 3) {
@@ -1248,7 +1248,7 @@ function animateRefinement() {
 // TRAJECTORY PLAYBACK MODULE
 // ============================================================
 
-(function() {
+(function () {
     // Trajectory state
     let trajMetadata = [];
     let trajCurrentIdx = 0;
@@ -1623,16 +1623,16 @@ function animateRefinement() {
         if (trajShowAligned) {
             const alignedGeom = new THREE.BufferGeometry();
             const alignedPos = new Float32Array(queryData.pc_local.length * 3);
-            
+
             // Start points at the current Query coordinates
             queryData.pc_local.forEach((pt, i) => {
                 alignedPos[i * 3] = qX + pt[0] * 100.0;
                 alignedPos[i * 3 + 1] = qY + pt[1] * 100.0;
                 alignedPos[i * 3 + 2] = qZ + pt[2] * 100.0 + 1.5;
             });
-            
+
             alignedGeom.setAttribute('position', new THREE.BufferAttribute(alignedPos, 3));
-            
+
             // Color aligned points magenta
             const alignedColors = new Float32Array(queryData.pc_local.length * 3);
             for (let i = 0; i < queryData.pc_local.length; i++) {
@@ -1697,9 +1697,9 @@ function animateRefinement() {
 
                 // 2. Solve Kabsch using attention heatmaps as weights
                 const solveResult = solveKabsch(
-                    currentSourcePts, 
-                    matchedTargetPts, 
-                    stepData.query_attention_heatmap, 
+                    currentSourcePts,
+                    matchedTargetPts,
+                    stepData.query_attention_heatmap,
                     matchedTargetWeights
                 );
 
