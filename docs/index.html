@@ -58,33 +58,44 @@
     </header>
 
     <main class="app-main">
-        <!-- Motivation & Network Architecture Row -->
-        <div class="motivation-network-grid">
-            <!-- Motivation Section -->
-            <section class="motivation-section card">
-                <h2 class="section-title">Motivation</h2>
-                <div class="motivation-container">
-                    <img src="resources/diff.png" alt="Motivation Image" class="section-image">
-                    <p class="motivation-text">
-                        <strong>Representation gap between aerial and ground sources:</strong> We use the bounding box with the same color to focus on the same region and highlight the differences between aerial (left) and ground (right) LiDAR scans.
-                    </p>
-                    <ul class="motivation-bullets">
-                        <li><span class="bullet-tag scope-tag">Scopes:</span> The aerial scans cover a large region, while ground scans cover only a local area.</li>
-                        <li><span class="bullet-tag coverage-tag">Coverages:</span> The aerial scans cover the top of the buildings, while ground scans cover more details on the ground.</li>
-                        <li><span class="bullet-tag density-tag">Densities:</span> The distribution and density of the points are different because of various scan patterns, effective ranges, and fidelity of LiDARs.</li>
-                        <li><span class="bullet-tag noise-tag">Noise Patterns:</span> The aerial scans have larger noises, as we can see from a bird-eye view and top-down view of a corner of the building.</li>
-                    </ul>
-                </div>
-            </section>
+        <!-- Motivation Section -->
+        <section class="motivation-section card">
+            <h2 class="section-title">Motivation</h2>
+            <div class="motivation-container">
+                <img src="resources/diff.png" alt="Motivation Image" class="section-image">
+                <p class="motivation-text">
+                    <strong>Representation gap between aerial and ground sources:</strong> We use the bounding box with the same color to focus on the same region and highlight the differences between aerial (left) and ground (right) LiDAR scans.
+                </p>
+                <ul class="motivation-bullets">
+                    <li><span class="bullet-tag scope-tag">Scopes:</span> The aerial scans cover a large region, while ground scans cover only a local area.</li>
+                    <li><span class="bullet-tag coverage-tag">Coverages:</span> The aerial scans cover the top of the buildings, while ground scans cover more details on the ground.</li>
+                    <li><span class="bullet-tag density-tag">Densities:</span> The distribution and density of the points are different because of various scan patterns, effective ranges, and fidelity of LiDARs.</li>
+                    <li><span class="bullet-tag noise-tag">Noise Patterns:</span> The aerial scans have larger noises, as we can see from a bird-eye view and top-down view of a corner of the building.</li>
+                </ul>
+            </div>
+        </section>
 
-            <!-- Network Architecture Section -->
-            <section class="network-section card">
-                <h2 class="section-title">Network Architecture</h2>
-                <div class="network-container">
-                    <img src="resources/network.png" alt="Network Architecture" class="section-image">
-                </div>
-            </section>
-        </div>
+        <!-- Network Architecture Section -->
+        <section class="network-section card">
+            <h2 class="section-title">Network Architecture</h2>
+            <div class="network-container">
+                <img src="resources/network.png" alt="Network Architecture" class="section-image">
+                <p class="network-text">
+                    <strong>Architecture of our network CROSSLOC3D:</strong> Our network consists of three parts: multi-grained feature selection, iterative refinement, and NetVLAD. First, we run the points through multi-grained voxelizations and several streams of sparse convolution operations with different kernel sizes. We use feature selection to choose the best field of view and keep the corresponding features F̂<sub>i</sub> for each voxelization V<sub>i</sub>. Second, we perform an iterative refinement process to obtain a set of local features F̄. Finally, the NetVLAD module will produce the global descriptor F<sub>g</sub> by aggregating local features F̄.
+                </p>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section class="results-section card">
+            <h2 class="section-title">Results</h2>
+            <div class="results-container">
+                <img src="resources/Results.png" alt="Results" class="section-image">
+                <p class="results-text">
+                    <strong>Figure 7: More qualitative comparisons between CROSSLOC3D and other SOTA methods [32, 17, 18]:</strong> For each row, top: Input ground query (blue) and top 5 retrievals (ranked from left to right) from the database of aerial data (true neighbor – green, false neighbor – red). For each row, bottom: Distributions of ground query and top 25 retrievals.
+                </p>
+            </div>
+        </section>
 
         <!-- Interactive Visualizations Section -->
         <section class="visualizations-section card">

@@ -657,20 +657,18 @@ body {
     filter: drop-shadow(0 2px 4px rgba(0,0,0,0.05));
 }
 
-.motivation-network-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
-    align-items: stretch;
+.motivation-section, .network-section, .results-section {
+    margin-left: 15%;
+    margin-right: 15%;
 }
-
 @media (max-width: 1024px) {
-    .motivation-network-grid {
-        grid-template-columns: 1fr;
+    .motivation-section, .network-section, .results-section {
+        margin-left: 0;
+        margin-right: 0;
     }
 }
 
-.motivation-container, .network-container {
+.motivation-container, .network-container, .results-container {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -683,7 +681,7 @@ body {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
     border: 1px solid var(--border-color);
 }
-.motivation-text {
+.motivation-text, .network-text, .results-text {
     font-size: 1.05rem;
     line-height: 1.6;
     color: var(--text-primary);
