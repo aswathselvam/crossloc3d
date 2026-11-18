@@ -8,6 +8,8 @@ let isQueryHeatmap = true;
 let isRetrievedHeatmap = false;
 let isGlobalMapVisible = true;
 let isAlignedQueryVisible = false;
+let isRegionView = false;
+let localViewersRegionColored = false;
 
 // Viewers state
 const localViewers = {
@@ -29,6 +31,7 @@ let mapPointsLayerGroup = null;
 let globalQueryPointsObj = null;
 let globalRetrievedPointsObj = null;
 let globalAlignedPointsObj = null;
+let globalRegionLinksObj = null;
 let globalQueryBoxObj = null;
 let globalRetrievedBoxObj = null;
 let globalMapObj = null;
@@ -227,9 +230,12 @@ function createLocalViewer(elementId, type) {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+    // All preview cards are drawn in meters with the same framing (true relative scale).
+    // Query clouds are passed already in meters (queryPointsMeters); submaps are normalized.
+    const pcScale = type === 'query' ? 1.0 : DB_PC_SCALE;
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.5, 5000);
     camera.up.set(0, 0, 1); // Set Z as up vector to match point cloud coordinates
-    camera.position.set(0, -3, 1);
+    camera.position.set(0, -300, 100);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
@@ -243,6 +249,7 @@ function createLocalViewer(elementId, type) {
     controls.maxPolarAngle = Math.PI / 2; // Restrict viewing below ground level
 
     let pointsObj = null;
+    let baseColors = null; // default colours of the current cloud, restored by setColors(null)
 
     // Resize handler
     window.addEventListener('resize', () => {
@@ -285,10 +292,10 @@ function createLocalViewer(elementId, type) {
                 if (z > zMax) zMax = z;
             });
 
-            pointsArray.forEach(pt => {
-                const x = pt[0];
-                const y = pt[1];
-                const z = pt[2];
+            pointsArray.forEach((pt, i) => {
+                const x = pt[0] * pcScale;
+                const y = pt[1] * pcScale;
+                const z = pt[2] * pcScale;
                 positions.push(x, y, z);
 
                 const normZ = (zMax - zMin) > 0 ? (z - zMin) / (zMax - zMin) : 0.5;
@@ -319,23 +326,31 @@ function createLocalViewer(elementId, type) {
             geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
             const material = new THREE.PointsMaterial({
-                size: 0.05,
+                size: type === 'query' ? 2.5 : 4.0, // meters
                 vertexColors: true,
                 transparent: true,
                 opacity: 0.85
             });
 
+            baseColors = colors.slice();
             pointsObj = new THREE.Points(geometry, material);
             scene.add(pointsObj);
 
-            // Adjust camera view
-            geometry.computeBoundingSphere();
-            const sphere = geometry.boundingSphere;
-            if (sphere) {
-                controls.target.copy(sphere.center);
-                camera.position.set(sphere.center.x, sphere.center.y, sphere.radius * 2);
-                controls.update();
-            }
+            // Common framing for every card: top-down view of the full 200 m submap extent,
+            // centered on the cloud origin (not auto-fit, which would hide the scale difference).
+            const frameRadius = DB_PC_SCALE * Math.SQRT2;
+            controls.target.set(0, 0, 0);
+            camera.position.set(0, 0, frameRadius * 2);
+            controls.update();
+        },
+
+        // Recolour in place (no camera reset). colorList: [[r,g,b], ...] per point, or null = default.
+        setColors(colorList) {
+            if (!pointsObj || !baseColors) return;
+            const attr = pointsObj.geometry.attributes.color;
+            if (!colorList) attr.array.set(baseColors);
+            else colorList.forEach((c, i) => { attr.array[i * 3] = c[0]; attr.array[i * 3 + 1] = c[1]; attr.array[i * 3 + 2] = c[2]; });
+            attr.needsUpdate = true;
         }
     };
 }
@@ -357,6 +372,222 @@ function createRingTexture() {
 
     const texture = new THREE.CanvasTexture(canvas);
     return texture;
+}
+
+// ---------------------------------------------------------------------------
+// Shared point-cloud helpers (used by the global viewer and the trajectory viewer)
+// ---------------------------------------------------------------------------
+
+// pc_local is normalized: centroid-centred, larger XY side spanning [-1, 1].
+// Aerial database submaps: x100 m (verified against the raw aerial map).
+// Ground queries: each bin is a full Velodyne scan normalized by its own extent, so the
+// scale differs per frame. query_scale.py stores it per query as pc_scale / pc_offset
+// (exact from the raw bag where available, otherwise an estimate: pc_scale_source).
+// pc_local * pc_scale + pc_offset = points in meters around the sensor (GPS) position.
+const QUERY_PC_SCALE_FALLBACK = 78.8;
+const DB_PC_SCALE = 100.0;
+
+function queryPointsMeters(q) {
+    if (!q._pcMeters) {
+        const s = q.pc_scale || QUERY_PC_SCALE_FALLBACK;
+        const o = q.pc_offset || [0, 0, 0];
+        q._pcMeters = q.pc_local.map(p => [p[0] * s + o[0], p[1] * s + o[1], p[2] * s + o[2]]);
+    }
+    return q._pcMeters;
+}
+
+function queryScaleLabel(q) {
+    const s = q.pc_scale || QUERY_PC_SCALE_FALLBACK;
+    return q.pc_scale_source === 'bag'
+        ? `scale ${s.toFixed(1)} m, from raw scan`
+        : `scale ≈ ${s.toFixed(0)} m, estimated`;
+}
+
+// Jet colormap for attention weights in [0, 1]:
+// dark blue -> blue -> cyan -> yellow -> red -> dark red.
+const JET_LEGEND_GRADIENT = 'linear-gradient(to right, #000080 0%, #0000ff 12.5%, #00ffff 37.5%, #ffff00 62.5%, #ff0000 87.5%, #800000 100%)';
+function jetColor(w) {
+    const v = Number.isFinite(w) ? Math.max(0, Math.min(1, w)) : 0;
+    const clamp = x => Math.max(0, Math.min(1, x));
+    return [
+        clamp(1.5 - Math.abs(4 * v - 3)),
+        clamp(1.5 - Math.abs(4 * v - 2)),
+        clamp(1.5 - Math.abs(4 * v - 1))
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Region contribution view (data from region_attribution.py)
+// ---------------------------------------------------------------------------
+// Each cloud is split into regions; the similarity <q, r> of the two global descriptors is
+// decomposed exactly into region-pair contributions. A region is colored by its share relative
+// to the average region of its cloud (0 = none, 0.5 on the colormap = average, 1 = 2x average).
+const REGION_PAIR_COLORS = ['#ffd400', '#ff7a00', '#ff2dd4'];
+// Region view colouring lives in region_analysis.js (RegionAnalysis.sideColors).
+const REGION_PAIR_GRADIENT = `linear-gradient(to right, ${REGION_PAIR_COLORS.join(', ')})`;
+function hasRegionData(stepData) {
+    return !!(stepData && stepData.region_ids && stepData.query_region_ids &&
+        stepData.region_contrib && stepData.query_region_contrib && stepData.region_pairs);
+}
+
+// Weighted, trimmed point-to-point ICP with a gravity-aligned (4-DoF: x, y, z, yaw)
+// motion model. Ground queries and aerial submaps are both z-up, so we only solve
+// for heading + translation; this avoids spurious tilts from partial overlap.
+//
+// src, tgt: arrays of [x, y, z] in meters, both expressed in the same frame.
+// srcW / tgtW: optional per-point attention weights in [0, 1].
+// Returns { poses, rmse, inliers } where poses[k] = { yaw, t: [x, y, z] } is the
+// cumulative transform after iteration k (poses[0] is identity).
+function runWeightedIcp(src, tgt, srcW, tgtW, opts = {}) {
+    const maxIter = opts.maxIter ?? 40;
+    const startDist = opts.startDist ?? 8.0;   // initial correspondence gate (m)
+    const endDist = opts.endDist ?? 3.0;       // final gate (m); aerial submaps are ~6 m point spacing
+    const annealIters = opts.annealIters ?? 15;
+    const weightFloor = 0.05;                  // keep zero-attention points from vanishing entirely
+
+    const poses = [{ yaw: 0, t: [0, 0, 0] }];
+    if (!src.length || !tgt.length) return { poses, rmse: NaN, inliers: 0 };
+
+    // 2D uniform grid over the target for fast radius-bounded nearest neighbor search.
+    const cell = startDist;
+    const grid = new Map();
+    tgt.forEach((p, j) => {
+        const key = Math.floor(p[0] / cell) + ',' + Math.floor(p[1] / cell);
+        let bucket = grid.get(key);
+        if (!bucket) grid.set(key, bucket = []);
+        bucket.push(j);
+    });
+
+    let cur = src.map(p => [p[0], p[1], p[2]]);
+    let yaw = 0, t = [0, 0, 0];
+    let rmse = NaN, inliers = 0;
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        const a = Math.min(1, iter / annealIters);
+        const gate = startDist + (endDist - startDist) * a;
+        const gateSq = gate * gate;
+
+        // 1. Correspondences (gated nearest neighbors)
+        const pairs = [];
+        let sqErr = 0;
+        for (let i = 0; i < cur.length; i++) {
+            const s = cur[i];
+            const cx = Math.floor(s[0] / cell), cy = Math.floor(s[1] / cell);
+            let best = -1, bestD = gateSq;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    const bucket = grid.get((cx + dx) + ',' + (cy + dy));
+                    if (!bucket) continue;
+                    for (const j of bucket) {
+                        const q = tgt[j];
+                        const ex = s[0] - q[0], ey = s[1] - q[1], ez = s[2] - q[2];
+                        const d = ex * ex + ey * ey + ez * ez;
+                        if (d < bestD) { bestD = d; best = j; }
+                    }
+                }
+            }
+            if (best < 0) continue;
+            const ws = srcW && srcW.length > i ? srcW[i] : 1;
+            const wt = tgtW && tgtW.length > best ? tgtW[best] : 1;
+            pairs.push([i, best, (weightFloor + ws) * (weightFloor + wt)]);
+            sqErr += bestD;
+        }
+        inliers = pairs.length;
+        rmse = inliers ? Math.sqrt(sqErr / inliers) : NaN;
+        if (inliers < 10) break;
+
+        // 2. Weighted closed-form 4-DoF solve
+        let sw = 0;
+        const cs = [0, 0, 0], ct = [0, 0, 0];
+        for (const [i, j, w] of pairs) {
+            sw += w;
+            for (let k = 0; k < 3; k++) { cs[k] += w * cur[i][k]; ct[k] += w * tgt[j][k]; }
+        }
+        for (let k = 0; k < 3; k++) { cs[k] /= sw; ct[k] /= sw; }
+        let A = 0, B = 0;
+        for (const [i, j, w] of pairs) {
+            const sx = cur[i][0] - cs[0], sy = cur[i][1] - cs[1];
+            const tx = tgt[j][0] - ct[0], ty = tgt[j][1] - ct[1];
+            A += w * (sx * tx + sy * ty);
+            B += w * (sx * ty - sy * tx);
+        }
+        const dYaw = Math.atan2(B, A);
+        const c = Math.cos(dYaw), s = Math.sin(dYaw);
+        const dt = [
+            ct[0] - (c * cs[0] - s * cs[1]),
+            ct[1] - (s * cs[0] + c * cs[1]),
+            ct[2] - cs[2]
+        ];
+
+        // 3. Apply increment and compose with the cumulative pose
+        cur = cur.map(p => [c * p[0] - s * p[1] + dt[0], s * p[0] + c * p[1] + dt[1], p[2] + dt[2]]);
+        t = [c * t[0] - s * t[1] + dt[0], s * t[0] + c * t[1] + dt[1], t[2] + dt[2]];
+        yaw += dYaw;
+        poses.push({ yaw, t: t.slice() });
+
+        const step = Math.abs(dYaw) + Math.hypot(dt[0], dt[1], dt[2]);
+        if (iter >= annealIters && step < 1e-3) break;
+    }
+    return { poses, rmse, inliers };
+}
+
+// Build the ICP problem in meters relative to the retrieved submap origin.
+// queryOffset: [dx, dy, dz] world offset of the query's GPS position from the retrieved origin.
+// If the query lies inside the retrieved submap, ICP starts from its GPS position (a real
+// overlap to refine). Otherwise it starts from the retrieval hypothesis "query at submap center".
+// qPcMeters: query points in meters around the sensor (queryPointsMeters).
+function setupQueryRegistration(qPcMeters, rPcLocal, queryOffset, qW, rW) {
+    const inside = Math.abs(queryOffset[0]) < DB_PC_SCALE && Math.abs(queryOffset[1]) < DB_PC_SCALE;
+    const init = inside ? queryOffset : [0, 0, 0];
+    const srcLocal = qPcMeters.map(p => [p[0] + init[0], p[1] + init[1], p[2] + init[2]]);
+    const tgtLocal = rPcLocal.map(p => [p[0] * DB_PC_SCALE, p[1] * DB_PC_SCALE, p[2] * DB_PC_SCALE]);
+    const icp = runWeightedIcp(srcLocal, tgtLocal, qW, rW);
+    // Offset from the ICP start to the query's true position (zero when starting from GPS).
+    const startOffset = queryOffset.map((v, k) => v - init[k]);
+    return { srcLocal, startOffset, icp, init: inside ? 'gps' : 'center' };
+}
+
+// Animate a THREE.Points cloud through registration:
+//   phase 1: rigidly slide the query from its true position to the retrieval hypothesis
+//            (query centered on the retrieved submap), then
+//   phase 2: play the ICP iterations.
+// srcLocal: query points (m) relative to the retrieved origin under the hypothesis.
+// origin:   [x, y, z] world position of the retrieved submap origin.
+// startOffset: [dx, dy, dz] world offset of the true query position from origin.
+// Returns the interval handle.
+function animateIcpAlignment(pointsObj, srcLocal, origin, startOffset, poses, onDone) {
+    const positions = pointsObj.geometry.attributes.position.array;
+    const write = (yaw, t) => {
+        const c = Math.cos(yaw), s = Math.sin(yaw);
+        for (let i = 0; i < srcLocal.length; i++) {
+            const p = srcLocal[i];
+            positions[i * 3] = origin[0] + c * p[0] - s * p[1] + t[0];
+            positions[i * 3 + 1] = origin[1] + s * p[0] + c * p[1] + t[1];
+            positions[i * 3 + 2] = origin[2] + p[2] + t[2];
+        }
+        pointsObj.geometry.attributes.position.needsUpdate = true;
+    };
+
+    const slideFrames = startOffset.some(v => Math.abs(v) > 1e-6) ? 20 : 0;
+    const totalFrames = slideFrames + poses.length;
+    let frame = 0;
+    write(0, startOffset);
+    const handle = setInterval(() => {
+        frame++;
+        if (frame <= slideFrames) {
+            const u = frame / slideFrames;
+            const e = u * u * (3 - 2 * u); // smoothstep
+            write(0, startOffset.map(v => v * (1 - e)));
+        } else {
+            const pose = poses[Math.min(frame - slideFrames, poses.length - 1)];
+            write(pose.yaw, pose.t);
+        }
+        if (frame >= totalFrames) {
+            clearInterval(handle);
+            if (onDone) onDone();
+        }
+    }, 40);
+    return handle;
 }
 
 // 3D Global Map Viewer Initialization
@@ -469,226 +700,21 @@ function initGlobal3dViewer() {
         }
     });
 
+    const btnRegionView = document.getElementById('btn-toggle-region-view');
+    if (btnRegionView) {
+        btnRegionView.addEventListener('click', () => {
+            isRegionView = !isRegionView;
+            btnRegionView.textContent = isRegionView ? 'Region Contribution: ON' : 'Region Contribution: OFF';
+            btnRegionView.classList.replace(isRegionView ? 'btn-secondary' : 'btn-primary',
+                isRegionView ? 'btn-primary' : 'btn-secondary');
+            if (currentQuery) {
+                renderActiveStepState();
+            }
+        });
+    }
+
     // Active animation handle
     let activeIcpAnimation = null;
-
-    // Helper functions for 3D matrix math and SVD (Kabsch alignment)
-    function solveKabsch(sourcePts, targetPts, sourceWeights, targetWeights) {
-        // sourcePts: array of [x, y, z], targetPts: array of [x, y, z]
-        // Weights: arrays of numbers
-        const N = sourcePts.length;
-        if (N === 0 || targetPts.length === 0) return { R: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], T: [0, 0, 0] };
-
-        // 1. Compute weighted centroids
-        let sumW = 0;
-        let centroidSrc = [0, 0, 0];
-        let centroidTgt = [0, 0, 0];
-
-        for (let i = 0; i < N; i++) {
-            // Match with target point
-            const src = sourcePts[i];
-            const tgt = targetPts[i] || [0, 0, 0];
-            const w = (sourceWeights ? sourceWeights[i] : 1.0) * (targetWeights ? targetWeights[i] : 1.0);
-            sumW += w;
-            centroidSrc[0] += w * src[0];
-            centroidSrc[1] += w * src[1];
-            centroidSrc[2] += w * src[2];
-            centroidTgt[0] += w * tgt[0];
-            centroidTgt[1] += w * tgt[1];
-            centroidTgt[2] += w * tgt[2];
-        }
-
-        if (sumW < 1e-6) {
-            sumW = 1.0;
-        }
-
-        centroidSrc[0] /= sumW;
-        centroidSrc[1] /= sumW;
-        centroidSrc[2] /= sumW;
-        centroidTgt[0] /= sumW;
-        centroidTgt[1] /= sumW;
-        centroidTgt[2] /= sumW;
-
-        // 2. Compute cross-covariance matrix H (3x3)
-        const H = [
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 0]
-        ];
-
-        for (let i = 0; i < N; i++) {
-            const src = sourcePts[i];
-            const tgt = targetPts[i] || [0, 0, 0];
-            const w = (sourceWeights ? sourceWeights[i] : 1.0) * (targetWeights ? targetWeights[i] : 1.0);
-
-            const dxSrc = src[0] - centroidSrc[0];
-            const dySrc = src[1] - centroidSrc[1];
-            const dzSrc = src[2] - centroidSrc[2];
-
-            const dxTgt = tgt[0] - centroidTgt[0];
-            const dyTgt = tgt[1] - centroidTgt[1];
-            const dzTgt = tgt[2] - centroidTgt[2];
-
-            H[0][0] += w * dxSrc * dxTgt;
-            H[0][1] += w * dxSrc * dyTgt;
-            H[0][2] += w * dxSrc * dzTgt;
-
-            H[1][0] += w * dySrc * dxTgt;
-            H[1][1] += w * dySrc * dyTgt;
-            H[1][2] += w * dySrc * dzTgt;
-
-            H[2][0] += w * dzSrc * dxTgt;
-            H[2][1] += w * dzSrc * dyTgt;
-            H[2][2] += w * dzSrc * dzTgt;
-        }
-
-        // 3. Singular Value Decomposition (SVD) of H = U * S * V^T
-        // For 3x3 matrices, we can use a basic Jacobi SVD solver
-        const svd = svd3x3(H);
-        const U = svd.U;
-        const V = svd.V;
-
-        // R = V * U^T
-        const R = [
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 0]
-        ];
-        for (let i = 0; i < 3; i++) {
-            for (let j = 0; j < 3; j++) {
-                R[i][j] = V[i][0] * U[j][0] + V[i][1] * U[j][1] + V[i][2] * U[j][2];
-            }
-        }
-
-        // Handle reflection
-        const det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
-            R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
-            R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
-
-        if (det < 0) {
-            // Adjust last column of V to handle reflection
-            for (let i = 0; i < 3; i++) {
-                V[i][2] = -V[i][2];
-            }
-            // Recompute R
-            for (let i = 0; i < 3; i++) {
-                for (let j = 0; j < 3; j++) {
-                    R[i][j] = V[i][0] * U[j][0] + V[i][1] * U[j][1] + V[i][2] * U[j][2];
-                }
-            }
-        }
-
-        // T = centroidTgt - R * centroidSrc
-        const T = [
-            centroidTgt[0] - (R[0][0] * centroidSrc[0] + R[0][1] * centroidSrc[1] + R[0][2] * centroidSrc[2]),
-            centroidTgt[1] - (R[1][0] * centroidSrc[0] + R[1][1] * centroidSrc[1] + R[1][2] * centroidSrc[2]),
-            centroidTgt[2] - (R[2][0] * centroidSrc[0] + R[2][1] * centroidSrc[1] + R[2][2] * centroidSrc[2])
-        ];
-
-        return { R, T };
-    }
-
-    // Jacobi SVD solver for 3x3 matrix
-    function svd3x3(A) {
-        // Fast Jacobi method for symmetric matrices applied to A^T * A to find V, then U.
-        // For general A:
-        const V = [
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1]
-        ];
-        // Calculate S = A^T * A
-        const S = [
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 0]
-        ];
-        for (let i = 0; i < 3; i++) {
-            for (let j = 0; j < 3; j++) {
-                S[i][j] = A[0][i] * A[0][j] + A[1][i] * A[1][j] + A[2][i] * A[2][j];
-            }
-        }
-
-        // Jacobi rotation to diagonalize S (finding eigenvalues/eigenvectors V)
-        const maxSweep = 15;
-        for (let sweep = 0; sweep < maxSweep; sweep++) {
-            let offDiag = Math.abs(S[0][1]) + Math.abs(S[0][2]) + Math.abs(S[1][2]);
-            if (offDiag < 1e-10) break;
-
-            for (let p = 0; p < 2; p++) {
-                for (let q = p + 1; q < 3; q++) {
-                    const diff = S[q][q] - S[p][p];
-                    if (Math.abs(S[p][q]) < 1e-12) continue;
-
-                    let t;
-                    if (Math.abs(diff) < 1e-12) {
-                        t = S[p][q] > 0 ? 1 : -1;
-                    } else {
-                        const phi = diff / (2.0 * S[p][q]);
-                        t = Math.sign(phi) / (Math.abs(phi) + Math.sqrt(phi * phi + 1.0));
-                    }
-                    const c = 1.0 / Math.sqrt(t * t + 1.0);
-                    const s = t * c;
-
-                    // Update S
-                    const S_pp = S[p][p];
-                    const S_qq = S[q][q];
-                    const S_pq = S[p][q];
-
-                    S[p][p] = c * c * S_pp - 2.0 * c * s * S_pq + s * s * S_qq;
-                    S[q][q] = s * s * S_pp + 2.0 * c * s * S_pq + c * c * S_qq;
-                    S[p][q] = S[q][p] = 0.0;
-
-                    for (let r = 0; r < 3; r++) {
-                        if (r !== p && r !== q) {
-                            const S_rp = S[r][p];
-                            const S_rq = S[r][q];
-                            S[r][p] = S[p][r] = c * S_rp - s * S_rq;
-                            S[r][q] = S[q][r] = s * S_rp + c * S_rq;
-                        }
-                    }
-
-                    // Update V
-                    for (let r = 0; r < 3; r++) {
-                        const V_rp = V[r][p];
-                        const V_rq = V[r][q];
-                        V[r][p] = c * V_rp - s * V_rq;
-                        V[r][q] = s * V_rp + c * V_rq;
-                    }
-                }
-            }
-        }
-
-        // Now singular values are eigenvalues' square roots
-        const s0 = Math.sqrt(Math.max(0, S[0][0]));
-        const s1 = Math.sqrt(Math.max(0, S[1][1]));
-        const s2 = Math.sqrt(Math.max(0, S[2][2]));
-
-        // Calculate U: U = A * V * inv(Sigma)
-        const U = [
-            [0, 0, 0],
-            [0, 0, 0],
-            [0, 0, 0]
-        ];
-        for (let i = 0; i < 3; i++) {
-            U[i][0] = A[i][0] * V[0][0] + A[i][1] * V[1][0] + A[i][2] * V[2][0];
-            U[i][1] = A[i][0] * V[0][1] + A[i][1] * V[1][1] + A[i][2] * V[2][1];
-            U[i][2] = A[i][0] * V[0][2] + A[i][1] * V[1][2] + A[i][2] * V[2][2];
-        }
-
-        // Normalize columns of U
-        const n0 = Math.sqrt(U[0][0] * U[0][0] + U[1][0] * U[1][0] + U[2][0] * U[2][0]) || 1;
-        const n1 = Math.sqrt(U[0][1] * U[0][1] + U[1][1] * U[1][1] + U[2][1] * U[2][1]) || 1;
-        const n2 = Math.sqrt(U[0][2] * U[0][2] + U[1][2] * U[1][2] + U[2][2] * U[2][2]) || 1;
-
-        for (let i = 0; i < 3; i++) {
-            U[i][0] /= n0;
-            U[i][1] /= n1;
-            U[i][2] /= n2;
-        }
-
-        return { U, V };
-    }
 
     // Resize handler
     window.addEventListener('resize', () => {
@@ -729,8 +755,51 @@ function initGlobal3dViewer() {
         return count > 0 ? (sumZ / count) : 30.0;
     }
 
+    // Region view: hover / click a point of the query or retrieved cloud to select its region
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Points.threshold = 3; // meters
+    const pointer = new THREE.Vector2();
+    let pickQueued = false, lastPointerEvent = null, downAt = null;
+    function pickRegionPoint(ev) {
+        if (!isRegionView || !globalQueryPointsObj) return null;
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointer.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+        raycaster.setFromCamera(pointer, camera);
+        const hits = raycaster.intersectObjects([globalQueryPointsObj, globalRetrievedPointsObj].filter(Boolean));
+        if (!hits.length) return { side: null };
+        return { side: hits[0].object === globalQueryPointsObj ? 'q' : 'r', index: hits[0].index };
+    }
+    renderer.domElement.addEventListener('pointermove', ev => {
+        if (!isRegionView || ev.buttons) return; // ignore while orbiting
+        lastPointerEvent = ev;
+        if (pickQueued) return;
+        pickQueued = true;
+        requestAnimationFrame(() => {
+            pickQueued = false;
+            const hit = pickRegionPoint(lastPointerEvent);
+            if (hit) RegionAnalysis.hoverPoint(hit.side, hit.index);
+        });
+    });
+    renderer.domElement.addEventListener('pointerleave', () => { if (isRegionView) RegionAnalysis.hoverPoint(null); });
+    renderer.domElement.addEventListener('pointerdown', ev => { downAt = [ev.clientX, ev.clientY]; });
+    renderer.domElement.addEventListener('pointerup', ev => {
+        if (!isRegionView || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return; // a drag, not a click
+        const hit = pickRegionPoint(ev);
+        if (hit && hit.side) RegionAnalysis.clickPoint(hit.side, hit.index);
+    });
+
     global3dViewer = {
-        updateOverlays(qX, qY, qPcLocal, rX, rY, rPcLocal, isCorrect, attentionHeatmap, queryAttentionHeatmap, resetCamera = false) {
+        // Recolour the query / retrieved overlay clouds in place (region hover, colour mode)
+        setOverlayColors(qList, rList) {
+            [[globalQueryPointsObj, qList], [globalRetrievedPointsObj, rList]].forEach(([obj, list]) => {
+                if (!obj || !list) return;
+                const attr = obj.geometry.attributes.color;
+                if (attr.count !== list.length) return;
+                list.forEach((c, i) => { attr.array[i * 3] = c[0]; attr.array[i * 3 + 1] = c[1]; attr.array[i * 3 + 2] = c[2]; });
+                attr.needsUpdate = true;
+            });
+        },
+        updateOverlays(qX, qY, qPcMeters, rX, rY, rPcLocal, isCorrect, attentionHeatmap, queryAttentionHeatmap, resetCamera = false, regionData = null) {
             // Remove previous overlays
             if (globalQueryPointsObj) {
                 scene.remove(globalQueryPointsObj);
@@ -762,6 +831,22 @@ function initGlobal3dViewer() {
                 globalAlignedPointsObj.material.dispose();
                 globalAlignedPointsObj = null;
             }
+            if (globalRegionLinksObj) {
+                scene.remove(globalRegionLinksObj);
+                globalRegionLinksObj.traverse(o => {
+                    if (o.geometry) o.geometry.dispose();
+                    if (o.material) o.material.dispose();
+                });
+                globalRegionLinksObj = null;
+            }
+            const showRegions = isRegionView && regionData;
+            const regionColors = showRegions ? RegionAnalysis.colors(regionData, qPcMeters, rPcLocal) : null;
+            // Dim the RGB campus map so the highlighted regions stand out
+            if (globalMapObj) {
+                globalMapObj.material.transparent = !!showRegions;
+                globalMapObj.material.opacity = showRegions ? 0.25 : 1.0;
+                globalMapObj.material.needsUpdate = true;
+            }
 
             // Stop any running ICP animation
             if (activeIcpAnimation) {
@@ -782,25 +867,22 @@ function initGlobal3dViewer() {
 
             // Calculate height ranges for color gradient mapping
             let qZMin = Infinity, qZMax = -Infinity;
-            qPcLocal.forEach(pt => {
+            qPcMeters.forEach(pt => {
                 const z = pt[2];
                 if (z < qZMin) qZMin = z;
                 if (z > qZMax) qZMax = z;
             });
 
-            qPcLocal.forEach((pt, i) => {
-                const x = qX + pt[0] * 100.0;
-                const y = qY + pt[1] * 100.0;
-                const z = qZ + pt[2] * 100.0 + 1.5; // lift slightly above ground to prevent z-fighting
+            qPcMeters.forEach((pt, i) => {
+                const x = qX + pt[0];
+                const y = qY + pt[1];
+                const z = qZ + pt[2] + 1.5; // query points are in meters; sensor ~1.5 m above ground
                 qPos.push(x, y, z);
 
-                if (isQueryHeatmap && queryAttentionHeatmap && queryAttentionHeatmap.length > i) {
-                    const weight = queryAttentionHeatmap[i];
-                    // Turbo-like colormap approximation (Blue -> Green -> Yellow -> Red)
-                    const r = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.5))));
-                    const g = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.25))));
-                    const b = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * weight)));
-                    qColors.push(r, g, b);
+                if (showRegions) {
+                    qColors.push(...regionColors.q[i]);
+                } else if (isQueryHeatmap && queryAttentionHeatmap && queryAttentionHeatmap.length > i) {
+                    qColors.push(...jetColor(queryAttentionHeatmap[i]));
                 } else if (isQueryHeatmap) {
                     const normZ = (qZMax - qZMin) > 0 ? (pt[2] - qZMin) / (qZMax - qZMin) : 0.5;
                     // Blue height-gradient: Dark blue (bottom) to light blue/cyan (top)
@@ -832,20 +914,16 @@ function initGlobal3dViewer() {
             const rPos = [];
             const rColors = [];
             rPcLocal.forEach((pt, i) => {
-                const x = rX + pt[0] * 100.0;
-                const y = rY + pt[1] * 100.0;
-                const z = rZ + pt[2] * 100.0 + 1.5; // lift slightly above ground
+                const x = rX + pt[0] * DB_PC_SCALE;
+                const y = rY + pt[1] * DB_PC_SCALE;
+                const z = rZ + pt[2] * DB_PC_SCALE + 1.5; // lift slightly above ground
                 rPos.push(x, y, z);
 
                 // Assign color based on heatmap if enabled
-                if (isRetrievedHeatmap && attentionHeatmap && attentionHeatmap.length > i) {
-                    // Generate a color map (jet or turbo) using the attention weight
-                    const weight = attentionHeatmap[i];
-                    // Turbo-like colormap approximation (Blue -> Green -> Yellow -> Red)
-                    const r = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.5))));
-                    const g = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * (weight - 0.25))));
-                    const b = Math.max(0.0, Math.min(1.0, 1.5 - Math.abs(1.0 - 4.0 * weight)));
-                    rColors.push(r, g, b);
+                if (showRegions) {
+                    rColors.push(...regionColors.r[i]);
+                } else if (isRetrievedHeatmap && attentionHeatmap && attentionHeatmap.length > i) {
+                    rColors.push(...jetColor(attentionHeatmap[i]));
                 } else {
                     const rColorHex = isCorrect ? 0x10b981 : 0xef4444;
                     const c = new THREE.Color(rColorHex);
@@ -864,12 +942,19 @@ function initGlobal3dViewer() {
             globalRetrievedPointsObj = new THREE.Points(rGeom, rMat);
             scene.add(globalRetrievedPointsObj);
 
-            // 3. Add Query Bounding Box (40m x 40m x 40m)
-            const qBoxGeom = new THREE.BoxGeometry(40, 40, 40);
+            // 3. Add Query Bounding Box (extent of the scan, in meters)
+            const qMin = [Infinity, Infinity, Infinity], qMax = [-Infinity, -Infinity, -Infinity];
+            qPcMeters.forEach(pt => {
+                for (let k = 0; k < 3; k++) {
+                    if (pt[k] < qMin[k]) qMin[k] = pt[k];
+                    if (pt[k] > qMax[k]) qMax[k] = pt[k];
+                }
+            });
+            const qBoxGeom = new THREE.BoxGeometry(qMax[0] - qMin[0], qMax[1] - qMin[1], Math.max(qMax[2] - qMin[2], 1));
             const qEdges = new THREE.EdgesGeometry(qBoxGeom);
             const qBoxMat = new THREE.LineBasicMaterial({ color: 0x00bcff, linewidth: 2 });
             globalQueryBoxObj = new THREE.LineSegments(qEdges, qBoxMat);
-            globalQueryBoxObj.position.set(qX, qY, qZ + 20); // center box at ground + height offset
+            globalQueryBoxObj.position.set(qX + (qMin[0] + qMax[0]) / 2, qY + (qMin[1] + qMax[1]) / 2, qZ + 1.5 + (qMin[2] + qMax[2]) / 2);
             scene.add(globalQueryBoxObj);
 
             // 4. Add Retrieved Bounding Box (200m x 200m x 200m)
@@ -881,31 +966,61 @@ function initGlobal3dViewer() {
             globalRetrievedBoxObj.position.set(rX, rY, rZ + 100);
             scene.add(globalRetrievedBoxObj);
 
+            // 4b. Region contribution view: link the top region pairs (centroid to centroid)
+            if (showRegions) {
+                const centroid = (pts, ids, region, ox, oy, oz, scale) => {
+                    let sx = 0, sy = 0, sz = 0, n = 0;
+                    for (let i = 0; i < pts.length; i++) {
+                        if (ids[i] !== region) continue;
+                        sx += pts[i][0]; sy += pts[i][1]; sz += pts[i][2]; n++;
+                    }
+                    if (!n) return null;
+                    return new THREE.Vector3(ox + sx / n * scale, oy + sy / n * scale, oz + sz / n * scale + 1.5);
+                };
+                globalRegionLinksObj = new THREE.Group();
+                regionData.region_pairs.slice(0, REGION_PAIR_COLORS.length).forEach(([qa, rb], k) => {
+                    const a = centroid(qPcMeters, regionData.query_region_ids, qa, qX, qY, qZ, 1.0);
+                    const b = centroid(rPcLocal, regionData.region_ids, rb, rX, rY, rZ, DB_PC_SCALE);
+                    if (!a || !b) return;
+                    const color = new THREE.Color(REGION_PAIR_COLORS[k]);
+                    // Arc the link upward so it stays visible above the clouds
+                    const mid = a.clone().add(b).multiplyScalar(0.5);
+                    mid.z += 15 + 0.15 * a.distanceTo(b);
+                    const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+                    const line = new THREE.Line(
+                        new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)),
+                        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false })
+                    );
+                    line.renderOrder = 10;
+                    globalRegionLinksObj.add(line);
+                    const ends = new THREE.Points(
+                        new THREE.BufferGeometry().setFromPoints([a, b]),
+                        new THREE.PointsMaterial({ color, size: 14, map: createRingTexture(), transparent: true, depthTest: false })
+                    );
+                    ends.renderOrder = 11;
+                    globalRegionLinksObj.add(ends);
+                });
+                scene.add(globalRegionLinksObj);
+            }
+
             // 5. Aligned Query Point Cloud & Fitting Animation
             if (isAlignedQueryVisible) {
-                // Initialize aligned points with the query point cloud, scaled and placed at the query's location
-                // We'll then animate it shifting to the retrieved location!
+                // Weighted ICP in meters relative to the retrieved submap origin.
+                const { srcLocal, startOffset, icp, init } = setupQueryRegistration(
+                    qPcMeters, rPcLocal, [qX - rX, qY - rY, qZ - rZ], queryAttentionHeatmap, attentionHeatmap);
+                const finalPose = icp.poses[icp.poses.length - 1];
+                console.log(`ICP (init: ${init}): ${icp.poses.length - 1} iters, yaw ${(finalPose.yaw * 180 / Math.PI).toFixed(2)} deg, ` +
+                    `t [${finalPose.t.map(v => v.toFixed(2)).join(', ')}] m, RMSE ${icp.rmse.toFixed(2)} m, inliers ${icp.inliers}/${srcLocal.length}`);
+
                 const alignedGeom = new THREE.BufferGeometry();
-                const alignedPos = new Float32Array(qPcLocal.length * 3);
-
-                // Start points at the current Query coordinates
-                qPcLocal.forEach((pt, i) => {
-                    alignedPos[i * 3] = qX + pt[0] * 100.0;
-                    alignedPos[i * 3 + 1] = qY + pt[1] * 100.0;
-                    alignedPos[i * 3 + 2] = qZ + pt[2] * 100.0 + 1.5;
-                });
-
-                alignedGeom.setAttribute('position', new THREE.BufferAttribute(alignedPos, 3));
-
-                // Color aligned points magenta
-                const alignedColors = new Float32Array(qPcLocal.length * 3);
-                for (let i = 0; i < qPcLocal.length; i++) {
-                    alignedColors[i * 3] = 0.85; // red
-                    alignedColors[i * 3 + 1] = 0.27; // green
-                    alignedColors[i * 3 + 2] = 0.94; // blue
+                alignedGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(srcLocal.length * 3), 3));
+                const alignedColors = new Float32Array(srcLocal.length * 3);
+                for (let i = 0; i < srcLocal.length; i++) {
+                    alignedColors[i * 3] = 0.85;
+                    alignedColors[i * 3 + 1] = 0.27;
+                    alignedColors[i * 3 + 2] = 0.94;
                 }
                 alignedGeom.setAttribute('color', new THREE.BufferAttribute(alignedColors, 3));
-
                 const alignedMat = new THREE.PointsMaterial({
                     size: 6.5,
                     vertexColors: true,
@@ -914,89 +1029,25 @@ function initGlobal3dViewer() {
                     opacity: 0.95,
                     depthWrite: false
                 });
-
                 globalAlignedPointsObj = new THREE.Points(alignedGeom, alignedMat);
                 scene.add(globalAlignedPointsObj);
 
-                // Run visual ICP animation
-                // Start source points at local query coordinates (scaled by 100)
-                let currentSourcePts = qPcLocal.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
-                // Target points are local retrieved coordinates (scaled by 100)
-                const targetPts = rPcLocal.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
-
-                let iter = 0;
-                const maxIcpIterations = 25;
-
-                activeIcpAnimation = setInterval(() => {
-                    if (iter >= maxIcpIterations || !globalAlignedPointsObj) {
-                        clearInterval(activeIcpAnimation);
+                const alignedLabel = document.getElementById('legend-aligned-label');
+                if (alignedLabel) alignedLabel.textContent = 'Aligned Query (ICP running…)';
+                activeIcpAnimation = animateIcpAlignment(
+                    globalAlignedPointsObj, srcLocal,
+                    [rX, rY, rZ + 1.5],
+                    startOffset,
+                    icp.poses,
+                    () => {
                         activeIcpAnimation = null;
-                        return;
-                    }
-
-                    // 1. Association: For each source point, find the closest target point
-                    const matchedTargetPts = [];
-                    const matchedTargetWeights = [];
-                    for (let i = 0; i < currentSourcePts.length; i++) {
-                        const sPt = currentSourcePts[i];
-                        let bestDistSq = Infinity;
-                        let bestTgt = targetPts[0];
-                        let bestIdx = 0;
-
-                        // Simple nearest neighbor search
-                        for (let j = 0; j < targetPts.length; j++) {
-                            const tPt = targetPts[j];
-                            const dx = sPt[0] - tPt[0];
-                            const dy = sPt[1] - tPt[1];
-                            const dz = sPt[2] - tPt[2];
-                            const distSq = dx * dx + dy * dy + dz * dz;
-                            if (distSq < bestDistSq) {
-                                bestDistSq = distSq;
-                                bestTgt = tPt;
-                                bestIdx = j;
-                            }
+                        if (alignedLabel) {
+                            alignedLabel.textContent = Number.isFinite(icp.rmse)
+                                ? `Aligned Query (ICP RMSE ${icp.rmse.toFixed(2)} m)`
+                                : 'Aligned Query (ICP: no overlap)';
                         }
-                        matchedTargetPts.push(bestTgt);
-                        matchedTargetWeights.push(attentionHeatmap ? attentionHeatmap[bestIdx] : 1.0);
                     }
-
-                    // 2. Solve Kabsch using attention heatmaps as weights
-                    const solveResult = solveKabsch(
-                        currentSourcePts,
-                        matchedTargetPts,
-                        queryAttentionHeatmap,
-                        matchedTargetWeights
-                    );
-
-                    const R = solveResult.R;
-                    const T = solveResult.T;
-
-                    // 3. Apply transformation locally, then render globally at retrieved position
-                    // We interpolate the global position from current Query to Retrieved location to animate the translation!
-                    const t = Math.min(1.0, (iter + 1) / maxIcpIterations);
-                    const currentGlobalX = qX + (rX - qX) * t;
-                    const currentGlobalY = qY + (rY - qY) * t;
-                    const currentGlobalZ = qZ + (rZ - qZ) * t;
-
-                    const positions = globalAlignedPointsObj.geometry.attributes.position.array;
-                    for (let i = 0; i < currentSourcePts.length; i++) {
-                        const p = currentSourcePts[i];
-                        // Transform local coordinate
-                        const nx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2] + T[0];
-                        const ny = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2] + T[1];
-                        const nz = R[2][0] * p[0] * 0.95 + R[2][1] * p[1] * 0.95 + R[2][2] * p[2] + T[2]; // slight scale correction on Z if needed
-
-                        currentSourcePts[i] = [nx, ny, nz];
-
-                        // Set global positions
-                        positions[i * 3] = nx + currentGlobalX;
-                        positions[i * 3 + 1] = ny + currentGlobalY;
-                        positions[i * 3 + 2] = nz + currentGlobalZ + 1.5;
-                    }
-
-                    globalAlignedPointsObj.geometry.attributes.position.needsUpdate = true;
-                    iter++;
-                }, 40); // 40ms per step
+                );
             }
 
             // Focus camera dynamically on the actual local terrain height only when changing query
@@ -1022,12 +1073,12 @@ async function selectQueryIndex(queryIdx) {
 
         // Update summary labels safely using textContent
         infoQueryIdx.textContent = currentQuery.query_idx;
-        infoQueryFile.textContent = currentQuery.query_file.split('/').pop();
+        infoQueryFile.textContent = `${currentQuery.query_file.split('/').pop()} (${queryScaleLabel(currentQuery)})`;
         infoQueryUtm.textContent = `E: ${currentQuery.easting.toFixed(2)} | N: ${currentQuery.northing.toFixed(2)}`;
         infoQueryLatlon.textContent = `${currentQuery.lat.toFixed(6)}, ${currentQuery.lon.toFixed(6)}`;
 
         // Update local query viewer
-        localViewers.query.updatePoints(currentQuery.pc_local);
+        localViewers.query.updatePoints(queryPointsMeters(currentQuery));
 
         // Update step cards distance labels
         for (let step = 1; step <= 3; step++) {
@@ -1122,14 +1173,10 @@ function renderActiveStepState(resetCamera = false) {
             fillOpacity: 1.0
         }).bindPopup(`Step ${currentStep} Retrieved Center<br>Dist: ${stepData.dist_to_query_meters.toFixed(2)}m`).addTo(mapPointsLayerGroup);
 
-        // Plot query points (magenta dots) globally - scaled by x5 (from 20m to 100m scale)
+        // Plot query points globally at metric scale. pc_global is projected by
+        // query_scale.py with the query's pc_scale / pc_offset, matching the 3D view.
         currentQuery.pc_global.forEach(pt => {
-            const dLat = pt[0] - qLat;
-            const dLon = pt[1] - qLon;
-            const scaledLat = qLat + dLat * 5.0;
-            const scaledLon = qLon + dLon * 5.0;
-
-            L.circleMarker([scaledLat, scaledLon], {
+            L.circleMarker([pt[0], pt[1]], {
                 radius: 1.5,
                 fillColor: '#00bcff',
                 stroke: false,
@@ -1155,6 +1202,13 @@ function renderActiveStepState(resetCamera = false) {
         leafletMap.fitBounds(bounds.pad(0.35));
     }
 
+    // Preview cards: region colours are applied in place by RegionAnalysis (no camera reset);
+    // only touch them while the region view is on or was just turned off.
+    if (localViewers.query && (isRegionView || localViewersRegionColored)) {
+        localViewersRegionColored = isRegionView;
+        RegionAnalysis.applyCardColors();
+    }
+
     // 2. Three.js Global 3D Map updates
     if (global3dViewer) {
         // Centered coordinates around UTM origin
@@ -1164,12 +1218,13 @@ function renderActiveStepState(resetCamera = false) {
         const rY = stepData.northing - 4317500.0;
 
         global3dViewer.updateOverlays(
-            qX, qY, currentQuery.pc_local,
+            qX, qY, queryPointsMeters(currentQuery),
             rX, rY, stepData.pc_local,
             stepData.is_correct,
             stepData.attention_heatmap,
             stepData.query_attention_heatmap,
-            resetCamera
+            resetCamera,
+            hasRegionData(stepData) ? stepData : null
         );
     }
 
@@ -1185,10 +1240,10 @@ function renderActiveStepState(resetCamera = false) {
 
     if (legendQueryColor && legendQueryLabel) {
         if (isQueryHeatmap && stepData.query_attention_heatmap) {
-            legendQueryColor.style.background = 'linear-gradient(to right, #0000ff, #00ff00, #ffff00, #ff0000)';
+            legendQueryColor.style.background = JET_LEGEND_GRADIENT;
             legendQueryLabel.textContent = 'Query: Attention Heatmap';
         } else if (isQueryHeatmap) {
-            legendQueryColor.style.background = 'linear-gradient(to right, #050530, #00bcff)';
+            legendQueryColor.style.background = 'linear-gradient(to right, #1a4dff, #b3e6ff)';
             legendQueryLabel.textContent = 'Query: Height Gradient';
         } else {
             legendQueryColor.style.background = '#0073ff';
@@ -1198,7 +1253,7 @@ function renderActiveStepState(resetCamera = false) {
 
     if (legendRetrievedColor && legendRetrievedLabel && legendRetrievedBox) {
         if (isRetrievedHeatmap && stepData.attention_heatmap) {
-            legendRetrievedColor.style.background = 'linear-gradient(to right, #0000ff, #00ff00, #ffff00, #ff0000)';
+            legendRetrievedColor.style.background = JET_LEGEND_GRADIENT;
             legendRetrievedLabel.textContent = 'Retrieved: Attention Heatmap';
             legendRetrievedBox.style.borderColor = stepData.is_correct ? '#10b981' : '#ef4444';
             legendRetrievedBoxLabel.textContent = `Retrieved Box (${stepData.is_correct ? 'Correct' : 'Incorrect'})`;
@@ -1211,6 +1266,42 @@ function renderActiveStepState(resetCamera = false) {
         }
     }
 
+    // Region contribution view overrides the query/retrieved coloring and fills the pairs panel
+    const regionPanel = document.getElementById('legend-region-panel');
+    const regionPairsEl = document.getElementById('legend-region-pairs');
+    const regionNoteEl = document.getElementById('legend-region-note');
+    const showRegions = isRegionView && hasRegionData(stepData);
+    if (regionPanel) regionPanel.style.display = showRegions ? 'flex' : 'none';
+    if (showRegions) {
+        if (legendQueryColor && legendQueryLabel) {
+            legendQueryColor.style.background = REGION_PAIR_GRADIENT;
+            legendQueryLabel.textContent = 'Query: top-pair regions in pair colour, rest grey (shaded by height)';
+        }
+        if (legendRetrievedColor && legendRetrievedLabel) {
+            legendRetrievedColor.style.background = REGION_PAIR_GRADIENT;
+            legendRetrievedLabel.textContent = 'Retrieved: top-pair regions in pair colour, rest grey (shaded by height)';
+        }
+        if (regionPairsEl) {
+            regionPairsEl.replaceChildren();
+            stepData.region_pairs.slice(0, REGION_PAIR_COLORS.length).forEach(([qa, rb, , share], k) => {
+                const row = document.createElement('div');
+                row.style.cssText = 'display: flex; align-items: center; gap: 6px; color: var(--text-secondary);';
+                const swatch = document.createElement('span');
+                swatch.style.cssText = `width: 14px; height: 3px; background: ${REGION_PAIR_COLORS[k]}; display: inline-block; flex: none;`;
+                const label = document.createElement('span');
+                label.textContent = `${k + 1}. Query R${qa} ↔ Retrieved R${rb}: ${(share * 100).toFixed(1)}%`;
+                row.append(swatch, label);
+                regionPairsEl.appendChild(row);
+            });
+        }
+        if (regionNoteEl) {
+            const nPairs = stepData.query_region_contrib.length * stepData.region_contrib.length;
+            const top3 = stepData.region_pairs.slice(0, 3).reduce((a, p) => a + p[3], 0);
+            regionNoteEl.textContent = `Top 3 explain ${(top3 * 100).toFixed(1)}% of the similarity; ` +
+                `the rest is spread over ${nPairs} region pairs (even share ${(100 / nPairs).toFixed(2)}% each).`;
+        }
+    }
+
     if (legendGlobalColor && legendGlobalLabel) {
         if (isGlobalMapVisible) {
             legendGlobalColor.style.background = 'linear-gradient(to right, #455a64, #cfd8dc)';
@@ -1220,6 +1311,9 @@ function renderActiveStepState(resetCamera = false) {
             legendGlobalLabel.textContent = 'Global Map: Hidden';
         }
     }
+
+    // Region contribution analysis panel (matrix, cumulative share, flow, close-ups) + legend
+    RegionAnalysis.render();
 }
 
 // Animate refinement step-by-step
@@ -1544,21 +1638,18 @@ function animateRefinement() {
         const qGeom = new THREE.BufferGeometry();
         const qPos = [], qColors = [];
         let qZMin = Infinity, qZMax = -Infinity;
-        queryData.pc_local.forEach(pt => {
+        const qPcMeters = queryPointsMeters(queryData);
+        qPcMeters.forEach(pt => {
             if (pt[2] < qZMin) qZMin = pt[2];
             if (pt[2] > qZMax) qZMax = pt[2];
         });
-        queryData.pc_local.forEach((pt, i) => {
-            qPos.push(qX + pt[0] * 100, qY + pt[1] * 100, qZ + pt[2] * 100 + 1.5);
+        qPcMeters.forEach((pt, i) => {
+            qPos.push(qX + pt[0], qY + pt[1], qZ + pt[2] + 1.5);
             const normZ = (qZMax - qZMin) > 0 ? (pt[2] - qZMin) / (qZMax - qZMin) : 0.5;
             // Check if we have query attention heatmap for this step
             const qHeatmap = stepData.query_attention_heatmap;
             if (qHeatmap && qHeatmap.length > i) {
-                const w = qHeatmap[i];
-                const r = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.5))));
-                const g = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.25))));
-                const b = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * w)));
-                qColors.push(r, g, b);
+                qColors.push(...jetColor(qHeatmap[i]));
             } else {
                 qColors.push(0.1 + normZ * 0.6, 0.3 + normZ * 0.6, 1.0);
             }
@@ -1587,14 +1678,10 @@ function animateRefinement() {
             const rGeom = new THREE.BufferGeometry();
             const rPos = [], rColors = [];
             stepData.pc_local.forEach((pt, i) => {
-                rPos.push(rX + pt[0] * 100, rY + pt[1] * 100, rZ + pt[2] * 100 + 1.5);
+                rPos.push(rX + pt[0] * DB_PC_SCALE, rY + pt[1] * DB_PC_SCALE, rZ + pt[2] * DB_PC_SCALE + 1.5);
                 const heatmap = stepData.attention_heatmap;
                 if (heatmap && heatmap.length > i) {
-                    const w = heatmap[i];
-                    const r = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.5))));
-                    const g = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * (w - 0.25))));
-                    const b = Math.max(0, Math.min(1, 1.5 - Math.abs(1 - 4 * w)));
-                    rColors.push(r, g, b);
+                    rColors.push(...jetColor(heatmap[i]));
                 } else {
                     const c = new THREE.Color(stepData.is_correct ? 0x10b981 : 0xef4444);
                     rColors.push(c.r, c.g, c.b);
@@ -1621,27 +1708,20 @@ function animateRefinement() {
 
         // Aligned Query Point Cloud for Trajectory
         if (trajShowAligned) {
+            // Weighted ICP in meters relative to the retrieved submap origin.
+            const { srcLocal, startOffset, icp } = setupQueryRegistration(
+                queryPointsMeters(queryData), stepData.pc_local, [qX - rX, qY - rY, qZ - rZ],
+                stepData.query_attention_heatmap, stepData.attention_heatmap);
+
             const alignedGeom = new THREE.BufferGeometry();
-            const alignedPos = new Float32Array(queryData.pc_local.length * 3);
-
-            // Start points at the current Query coordinates
-            queryData.pc_local.forEach((pt, i) => {
-                alignedPos[i * 3] = qX + pt[0] * 100.0;
-                alignedPos[i * 3 + 1] = qY + pt[1] * 100.0;
-                alignedPos[i * 3 + 2] = qZ + pt[2] * 100.0 + 1.5;
-            });
-
-            alignedGeom.setAttribute('position', new THREE.BufferAttribute(alignedPos, 3));
-
-            // Color aligned points magenta
-            const alignedColors = new Float32Array(queryData.pc_local.length * 3);
-            for (let i = 0; i < queryData.pc_local.length; i++) {
-                alignedColors[i * 3] = 0.85; // red
-                alignedColors[i * 3 + 1] = 0.27; // green
-                alignedColors[i * 3 + 2] = 0.94; // blue
+            alignedGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(srcLocal.length * 3), 3));
+            const alignedColors = new Float32Array(srcLocal.length * 3);
+            for (let i = 0; i < srcLocal.length; i++) {
+                alignedColors[i * 3] = 0.85;
+                alignedColors[i * 3 + 1] = 0.27;
+                alignedColors[i * 3 + 2] = 0.94;
             }
             alignedGeom.setAttribute('color', new THREE.BufferAttribute(alignedColors, 3));
-
             const alignedMat = new THREE.PointsMaterial({
                 size: 6.5,
                 vertexColors: true,
@@ -1650,85 +1730,16 @@ function animateRefinement() {
                 opacity: 0.95,
                 depthWrite: false
             });
-
             trajAlignedCloudObj = new THREE.Points(alignedGeom, alignedMat);
             traj3dScene.add(trajAlignedCloudObj);
 
-            // Run visual ICP animation
-            // Start source points at local query coordinates (scaled by 100)
-            let currentSourcePts = queryData.pc_local.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
-            // Target points are local retrieved coordinates (scaled by 100)
-            const targetPts = stepData.pc_local.map(pt => [pt[0] * 100.0, pt[1] * 100.0, pt[2] * 100.0]);
-
-            let iter = 0;
-            const maxIcpIterations = 25;
-
-            trajIcpInterval = setInterval(() => {
-                if (iter >= maxIcpIterations || !trajAlignedCloudObj) {
-                    clearInterval(trajIcpInterval);
-                    trajIcpInterval = null;
-                    return;
-                }
-
-                // 1. Association
-                const matchedTargetPts = [];
-                const matchedTargetWeights = [];
-                for (let i = 0; i < currentSourcePts.length; i++) {
-                    const sPt = currentSourcePts[i];
-                    let bestDistSq = Infinity;
-                    let bestTgt = targetPts[0];
-                    let bestIdx = 0;
-
-                    for (let j = 0; j < targetPts.length; j++) {
-                        const tPt = targetPts[j];
-                        const dx = sPt[0] - tPt[0];
-                        const dy = sPt[1] - tPt[1];
-                        const dz = sPt[2] - tPt[2];
-                        const distSq = dx * dx + dy * dy + dz * dz;
-                        if (distSq < bestDistSq) {
-                            bestDistSq = distSq;
-                            bestTgt = tPt;
-                            bestIdx = j;
-                        }
-                    }
-                    matchedTargetPts.push(bestTgt);
-                    matchedTargetWeights.push(stepData.attention_heatmap ? stepData.attention_heatmap[bestIdx] : 1.0);
-                }
-
-                // 2. Solve Kabsch using attention heatmaps as weights
-                const solveResult = solveKabsch(
-                    currentSourcePts,
-                    matchedTargetPts,
-                    stepData.query_attention_heatmap,
-                    matchedTargetWeights
-                );
-
-                const R = solveResult.R;
-                const T = solveResult.T;
-
-                // 3. Apply transformation locally, then render globally at retrieved position
-                const t = Math.min(1.0, (iter + 1) / maxIcpIterations);
-                const currentGlobalX = qX + (rX - qX) * t;
-                const currentGlobalY = qY + (rY - qY) * t;
-                const currentGlobalZ = qZ + (rZ - qZ) * t;
-
-                const positions = trajAlignedCloudObj.geometry.attributes.position.array;
-                for (let i = 0; i < currentSourcePts.length; i++) {
-                    const p = currentSourcePts[i];
-                    const nx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2] + T[0];
-                    const ny = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2] + T[1];
-                    const nz = R[2][0] * p[0] * 0.95 + R[2][1] * p[1] * 0.95 + R[2][2] * p[2] + T[2];
-
-                    currentSourcePts[i] = [nx, ny, nz];
-
-                    positions[i * 3] = nx + currentGlobalX;
-                    positions[i * 3 + 1] = ny + currentGlobalY;
-                    positions[i * 3 + 2] = nz + currentGlobalZ + 1.5;
-                }
-
-                trajAlignedCloudObj.geometry.attributes.position.needsUpdate = true;
-                iter++;
-            }, 40);
+            trajIcpInterval = animateIcpAlignment(
+                trajAlignedCloudObj, srcLocal,
+                [rX, rY, rZ + 1.5],
+                startOffset,
+                icp.poses,
+                () => { trajIcpInterval = null; }
+            );
         }
 
         // Trail visibility
@@ -1787,7 +1798,7 @@ function animateRefinement() {
 
         // Update local viewers
         if (trajLocalQuery) {
-            trajLocalQuery.updatePoints(queryData.pc_local);
+            trajLocalQuery.updatePoints(queryPointsMeters(queryData));
         }
         if (trajLocalRetrieved && stepData) {
             trajLocalRetrieved.updatePoints(stepData.pc_local, stepData.is_correct);

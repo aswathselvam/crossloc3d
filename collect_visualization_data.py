@@ -20,6 +20,7 @@ def forward_step(model, data, step_idx, **kwargs):
         order = list(range(len(xs))[::-1])
 
     coords_list = []
+    strides_list = []  # voxel stride (in base-voxel units) of each scale's output tensor
     for i in order:
         x = model.backbone.up_conv0_lst[i](xs[i])
         for _, (conv, block) in enumerate(zip(model.backbone.up_convs_lst[i], model.backbone.up_blocks_lst[i])):
@@ -27,6 +28,7 @@ def forward_step(model, data, step_idx, **kwargs):
             x = block(x)
         features = x.decomposed_features
         coords_list.append(x.decomposed_coordinates[0].cpu().numpy())
+        strides_list.append(int(x.tensor_stride[0]))
         x = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
         x = x.permute(0, 2, 1)
         new_xs.append(x)
@@ -84,6 +86,9 @@ def forward_step(model, data, step_idx, **kwargs):
 
     x_fused = model.backbone.conv_fuse(fused_input)
     embeddings = model.pool.net_vlad(x_fused.permute(0, 2, 1))
+    if kwargs.get('return_point_features', False):
+        # Per-voxel features fed to NetVLAD: (C, N2+N1+N0), columns ordered like coords_list.
+        return embeddings, x_fused[0], coords_list, strides_list
     return embeddings
 
 def downsample_pc(pc, n_points=1024):
@@ -218,7 +223,9 @@ def main():
         q_pc_raw = q_loader.dataset.load_pc(q_meta['query'])
         q_pc_ds = downsample_pc(q_pc_raw, n_points=1024)
         q_lat, q_lon = utm.to_latlon(q_meta['easting'], q_meta['northing'], 18, 'N')
-        q_pc_global = project_pc_to_latlon(q_pc_ds, q_meta['northing'], q_meta['easting'], scale=20.0)
+        # Ground scans are normalized per frame (no fixed scale); approximate here and run
+        # query_scale.py afterwards to write the exact/estimated per-query scale and pc_global.
+        q_pc_global = project_pc_to_latlon(q_pc_ds, q_meta['northing'], q_meta['easting'], scale=78.8)
         
         query_entry = {
             'query_idx': q_idx,
